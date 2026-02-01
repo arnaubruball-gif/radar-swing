@@ -65,6 +65,6 @@ if st.button('📡 ESCANEAR CON AMIHUD Y DIFERENCIAL'):
     
     df_final = pd.DataFrame(data, columns=['Activo', 'Precio', 'R2 (Convicción)', 'Z-Diff (Retorno)', 'Amihud (Iliquidez)', 'Estado'])
     
-    st.dataframe(df_final.style.background_gradient(subset=['Amihud (Iliquidez)'], cmap='YlOrRd'), use_container_width=True)
+    sst.dataframe(df_final, use_container_width=True)
     st.info("💡 Z-Diff > 1.5: El precio ha subido mucho más que el dinero real (Burbuja local).")
     st.info("💡 Amihud Alto: El mercado está 'vacío'. Cualquier orden grande provocará un desplome.")
