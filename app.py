@@ -26,10 +26,10 @@ def analyze(ticker):
         df['TP_Price'] = (df['High'] + df['Low'] + df['Close']) / 3
         df['RMF'] = df['TP_Price'] * df['Vol_Proxy']
         
-        # 2. Amihud Illiquidity (Retorno Absoluto / Volumen)
-        # Valores altos = Precio moviéndose con poco dinero (frágil)
-        df['Amihud'] = (df['Ret'].abs() / (df['RMF'] / 1e6)) * 100
-        amihud_val = df['Amihud'].rolling(14).mean().iloc[-1]
+       # Amihud blindado: si no hay volumen, usa el rango de precio como proxy
+vol = df['RMF'].replace(0, np.nan) 
+df['Amihud'] = (df['Ret'].abs() / (vol / 1e6)).fillna(df['Ret'].abs() * 100)
+amihud_val = df['Amihud'].rolling(14).mean().iloc[-1]
         
         # 3. Diferencial de Retorno Acumulado (Z-Score de 20 días)
         # Compara Retorno vs Flujo Acumulado
