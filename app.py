@@ -44,7 +44,7 @@ with col_info:
 ASSETS = {
     'AUD/USD': 'AUDUSD=X', 'EUR/AUD': 'EURAUD=X', 'BITCOIN': 'BTC-USD', 
     'ORO': 'GC=F', 'S&P 500': '^SPX', 'GBP/USD': 'GBPUSD=X', 'USD/JPY': 'JPY=X',
-    'EUR/USD': 'EURUSD=X', 'NASDAQ 100': '^IXIC'
+    'EUR/USD': 'EURUSD=X', 'NASDAQ 100': '^IXIC', 'CHF/JPY': 'CHFJPY=X'
 }
 
 def analyze_asset(name, ticker):
@@ -91,7 +91,7 @@ def analyze_asset(name, ticker):
         elif last_r2 > 0.25: 
             veredicto = "💎 TENDENCIA"
 
-        return df, [name, f"{last_price:.4f}", round(last_r2, 3), round(z_val, 2), round(amihud, 4), veredicto, tp_val]
+        return df, [name, f"{last_price:.2f}", round(last_r2, 3), round(z_val, 2), round(amihud, 4), veredicto, tp_val]
     except:
         return None, None
 
@@ -103,22 +103,10 @@ if asset_to_plot:
     full_df, summary = analyze_asset(asset_to_plot, ASSETS[asset_to_plot])
     if full_df is not None:
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-        
-        # Colores de Velas por Convicción
-        # Azul: Institucional (>0.25) | Gris: Ficción (<0.12) | Naranja: Transición
         colors = ['cyan' if r > 0.25 else ('lightgrey' if r < 0.12 else 'orange') for r in full_df['R2_Dynamic']]
-        
-        fig.add_trace(go.Candlestick(
-            x=full_df.index, open=full_df['Open'], high=full_df['High'],
-            low=full_df['Low'], close=full_df['Close'], name="Precio"
-        ), row=1, col=1)
-        
-        fig.add_trace(go.Bar(
-            x=full_df.index, y=full_df['R2_Dynamic'], marker_color=colors, name="Convicción R2"
-        ), row=2, col=1)
-        
-        fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False,
-                          title=f"Gráfico de ADN: {asset_to_plot} (Azul=Real | Gris=Ficción)")
+        fig.add_trace(go.Candlestick(x=full_df.index, open=full_df['Open'], high=full_df['High'], low=full_df['Low'], close=full_df['Close'], name="Precio"), row=1, col=1)
+        fig.add_trace(go.Bar(x=full_df.index, y=full_df['R2_Dynamic'], marker_color=colors, name="Convicción R2"), row=2, col=1)
+        fig.update_layout(height=600, template="plotly_dark", xaxis_rangeslider_visible=False, showlegend=False, title=f"ADN: {asset_to_plot}")
         st.plotly_chart(fig, use_container_width=True)
 
 # --- 5. PANEL DE ESCANEO TOTAL ---
@@ -129,23 +117,16 @@ if st.button('📡 ESCANEAR MERCADO COMPLETO'):
         for name, ticker in ASSETS.items():
             _, s = analyze_asset(name, ticker)
             if s: all_data.append(s)
-    
     df_res = pd.DataFrame(all_data, columns=['Activo', 'Precio', 'R2', 'Z-Diff', 'Amihud', 'Veredicto', 'TP Objetivo'])
-    
-    # Estilo de la tabla
     def color_verdict(val):
         if 'CORTO' in val: return 'color: #ff4b4b'
         if 'LARGO' in val: return 'color: #00ffcc'
         if 'TENDENCIA' in val: return 'color: #1c83e1'
         return ''
-
     st.table(df_res.style.applymap(color_verdict, subset=['Veredicto']))
-    st.info("💡 El TP Objetivo es el nivel donde el Z-Diff regresa a cero (Precio de Equilibrio Estadístico).")
 
 # --- 6. GUÍA RÁPIDA ---
 with st.expander("📖 Manual de Operativa"):
-    st.write("""
-    1. **Busca Velas Grises + Z-Diff extremo:** Es una trampa. El precio volverá al TP Objetivo.
-    2. **Velas Azules:** No operes en contra. Los bancos tienen el control.
-    3. **Amihud Alto:** El movimiento hacia el TP será muy rápido por falta de liquidez.
-    """)
+    st.write("1. Busca Velas Grises + Z-Diff extremo: Es una trampa.")
+    st.write("2. Velas Azules: Dinero institucional real.")
+    st.write("3. TP Objetivo: Precio estadístico de equilibrio.")
