@@ -1,3 +1,14 @@
+import streamlit as st  # <--- ESTA LÍNEA DEBE IR PRIMERO
+import pandas as pd
+import numpy as np
+import yfinance as yf
+import plotly.graph_objects as go
+import plotly.express as px
+
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Halcón 4.0 Pro Terminal", layout="wide", page_icon="🦅")
+
+
 @st.cache_data(ttl=600)
 def fetch_and_calculate(tickers):
     results = []
