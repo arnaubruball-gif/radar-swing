@@ -102,3 +102,42 @@ st.info("""
     * Si **AUD/USD** es COMPRA y **NZD/USD** es VENTA -> Opera **Largo en AUD/NZD**.
     * Esto te permite operar monedas sin importar lo que haga el Dólar.
 """)
+
+# --- 7. CALCULADORA DE CRUCES Y GESTIÓN DE RIESGO ---
+st.write("---")
+st.subheader("🧮 Calculadora de Cruces (Swing Setup)")
+
+col1, col2, col3 = st.columns(3)
+with col1:
+    cruce_name = st.text_input("Par a operar (ej: GBPAUD=X)", value="GBPAUD=X")
+with col2:
+    direccion = st.selectbox("Dirección", ["COMPRA (Largo)", "VENTA (Corto)"])
+with col3:
+    riesgo_pct = st.number_input("% Riesgo de la cuenta", value=1.0)
+
+if st.button('Calcular Niveles de Swing'):
+    cruce_data = yf.download(cruce_name, period='30d', interval='1d', progress=False)
+    if not cruce_data.empty:
+        if isinstance(cruce_data.columns, pd.MultiIndex): cruce_data.columns = cruce_data.columns.get_level_values(0)
+        
+        # Cálculo de ATR para niveles de Swing
+        high_low = cruce_data['High'] - cruce_data['Low']
+        atr = high_low.rolling(14).mean().iloc[-1]
+        precio_act = cruce_data['Close'].iloc[-1]
+        
+        if "COMPRA" in direccion:
+            sl = precio_act - (1.5 * atr)
+            tp = precio_act + (3 * atr)
+        else:
+            sl = precio_act + (1.5 * atr)
+            tp = precio_act - (3 * atr)
+            
+        st.success(f"### Setup para {cruce_name}")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Precio Entrada", f"{precio_act:.4f}")
+        c2.metric("STOP LOSS (SL)", f"{sl:.4f}", delta="Riesgo", delta_color="inverse")
+        c3.metric("TAKE PROFIT (TP)", f"{tp:.4f}", delta="Objetivo")
+        
+        st.info(f"💡 Este setup arriesga un 1.5x de volatilidad diaria para buscar un 3x de beneficio. Ratio 1:2.")
+    else:
+        st.error("No se encontraron datos para ese cruce. Asegúrate de añadir '=X' al final (ej: EURGBP=X)")
