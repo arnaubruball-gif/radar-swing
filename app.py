@@ -2,13 +2,13 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import statsmodels.api as sm
 import plotly.graph_objects as go
-import plotly.express as px  # <--- IMPORTACIÓN CORREGIDA
+import plotly.express as px
 from plotly.subplots import make_subplots
-import time
 
 # --- 1. CONFIGURACIÓN DE ÉLITE ---
-st.set_page_config(page_title="Halcón 4.0 - Hurst & Volume", layout="wide", page_icon="🦅")
+st.set_page_config(page_title="Halcón 4.0 - Swing Terminal", layout="wide")
 
 st.markdown("""
     <style>
@@ -17,88 +17,88 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-st.title("🦅 Halcón de Guerra 4.0 | Pro Terminal")
-st.write("Análisis Fractal (Hurst), Ineficiencias Estructurales y Presión de Volumen")
+st.title("🦅 Halcón de Guerra 4.0 | Swing Intelligence")
 
-# --- 2. MOTOR MATEMÁTICO ---
+# --- 2. MOTOR DE ANÁLISIS ---
+ASSETS = {
+    'EUR/USD': 'EURUSD=X', 'GBP/USD': 'GBPUSD=X', 'AUD/USD': 'AUDUSD=X',
+    'NZD/USD': 'NZDUSD=X', 'USD/JPY': 'JPY=X', 'USD/CHF': 'CHF=X',
+    'USD/CAD': 'CAD=X', 'BITCOIN': 'BTC-USD', 'ORO (Spot)': 'GC=F',
+    'S&P 500': '^SPX'
+}
 
 def calcular_hurst(ts):
-    """Mide la memoria del mercado: <0.5 Reversión, >0.5 Tendencia"""
     if len(ts) < 30: return 0.5
+    lags = range(2, 20)
+    tau = [np.sqrt(np.std(np.subtract(ts[lag:], ts[:-lag]))) for lag in lags]
+    poly = np.polyfit(np.log(lags), np.log(tau), 1)
+    return poly[0] * 2.0
+
+def analyze_full(name, ticker):
     try:
-        lags = range(2, 20)
-        tau = [np.sqrt(np.std(np.subtract(ts[lag:], ts[:-lag]))) for lag in lags]
-        poly = np.polyfit(np.log(lags), np.log(tau), 1)
-        return poly[0] * 2.0
-    except:
-        return 0.5
-
-@st.cache_data(ttl=600)
-def fetch_and_analyze():
-    ASSETS = {
-        'EUR/USD': 'EURUSD=X', 'GBP/USD': 'GBPUSD=X', 'AUD/USD': 'AUDUSD=X',
-        'NZD/USD': 'NZDUSD=X', 'USD/JPY': 'JPY=X', 'USD/CHF': 'CHF=X',
-        'BITCOIN': 'BTC-USD', 'ORO (Spot)': 'GC=F', 'S&P 500': '^SPX'
-    }
-    
-    all_results = []
-    plot_data = {}
-
-    for name, ticker in ASSETS.items():
-        try:
-            df = yf.download(ticker, period='100d', interval='1d', progress=False)
-            if df.empty: continue
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            
-            prices = df['Close'].values.flatten().astype(float)
-            volumes = df['Volume'].values.flatten().astype(float)
-            
-            # Hurst (Memoria del mercado)
-            h_val = calcular_hurst(prices[-50:])
-            
-            # R2 (Convicción del movimiento actual)
-            x = np.arange(30)
-            y = prices[-30:]
-            coeffs = np.polyfit(x, y, 1)
-            y_hat = np.poly1d(coeffs)(x)
-            r2 = 1 - (np.sum((y - y_hat)**2) / (np.sum((y - np.mean(y))**2) + 1e-10))
-            
-            # Z-Diff (Desviación estadística)
-            ma40 = np.mean(prices[-40:])
-            z_val = (prices[-1] - ma40) / (np.std(prices[-40:]) + 1e-10)
-            
-            # Volumen Relativo
-            vol_avg = np.mean(volumes[-20:])
-            vol_rel = volumes[-1] / (vol_avg + 1e-10) if volumes[-1] > 0 else 1.0
-            
-            # Lógica de Señales
-            veredicto = "⚪ NEUTRAL"
-            if h_val < 0.47: # Zona de Reversión
-                if z_val > 1.6: veredicto = "🚨 VENTA (Ficción)"
-                elif z_val < -1.6: veredicto = "🟢 COMPRA (Oportunidad)"
-            elif h_val > 0.53 and r2 > 0.3: # Zona de Tendencia
-                veredicto = "💎 TENDENCIA REAL"
-
-            all_results.append({
-                'Activo': name, 'Precio': round(prices[-1], 4), 
-                'Hurst': round(h_val, 2), 'R2': round(r2, 2),
-                'Z-Diff': round(z_val, 2), 'Vol_Rel': round(vol_rel, 2),
-                'Veredicto': veredicto
-            })
-            plot_data[name] = df
-        except: continue
+        df = yf.download(ticker, period='200d', interval='1d', progress=False)
+        if df.empty: return None, None
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-    return pd.DataFrame(all_results), plot_data
+        # --- LOGICA ORIGINAL (TU MATRIZ) ---
+        df['Ret'] = df['Close'].pct_change()
+        df['Vol_Proxy'] = (df['High'] - df['Low']) * 100000
+        df['RMF'] = df['Close'] * df['Vol_Proxy']
+        
+        # R2 Dinámico (30d)
+        r2_series = []
+        for i in range(len(df)):
+            if i < 30: r2_series.append(0); continue
+            subset = df.iloc[i-30:i].dropna()
+            r2 = sm.OLS(subset['Ret'], sm.add_constant(subset['RMF'])).fit().rsquared
+            r2_series.append(r2)
+        df['R2_Dynamic'] = r2_series
+        
+        # Z-Diff (40d)
+        diff = df['Ret'].rolling(40).sum() - df['RMF'].pct_change().rolling(40).sum()
+        z_val = ((diff - diff.rolling(40).mean()) / (diff.rolling(40).std() + 1e-10)).iloc[-1]
+        
+        # Amihud
+        amihud = (df['Ret'].abs() / (df['RMF'].replace(0, np.nan) / 1e6)).fillna(df['Ret'].abs() * 100).rolling(20).mean().iloc[-1]
+        
+        # --- LOGICA NUEVA (HURST Y VOL) ---
+        prices = df['Close'].values.flatten().astype(float)
+        hurst = calcular_hurst(prices[-50:])
+        vol_rel = df['Volume'].iloc[-1] / (df['Volume'].tail(20).mean() + 1e-10) if 'Volume' in df else 1.0
 
-# --- 3. DASHBOARD ---
+        last_price = df['Close'].iloc[-1]
+        last_r2 = df['R2_Dynamic'].iloc[-1]
+        
+        veredicto = "⚪ NEUTRAL"
+        if last_r2 < 0.10:
+            if z_val > 1.6: veredicto = "🚨 VENTA (Ficción)"
+            elif z_val < -1.6: veredicto = "🟢 COMPRA (Oportunidad)"
+        elif last_r2 > 0.30: veredicto = "💎 TENDENCIA REAL"
 
-tab1, tab2 = st.tabs(["📊 Radar de Ineficiencias", "🎲 Proyección Probabilística"])
+        return df, {
+            'original': [name, f"{last_price:.4f}", round(last_r2, 3), round(z_val, 2), round(amihud, 4), veredicto],
+            'extra': [name, round(hurst, 2), round(vol_rel, 2)],
+            'stats': {'price': last_price, 'volatilidad': df['Ret'].tail(30).std(), 'drift': df['Ret'].tail(10).mean()}
+        }
+    except: return None, None
 
-df_res, all_plots = fetch_and_analyze()
+# --- 3. PANEL DE CONTROL ---
+tab1, tab2, tab3 = st.tabs(["📊 Matriz ADN (Original)", "🦅 Radar Hurst/Vol", "🎲 Montecarlo Direccional"])
 
-with tab1:
-    if not df_res.empty:
-        st.subheader("Matriz de Inteligencia Fractal")
+all_results = {}
+if st.sidebar.button('📡 ESCANEAR MERCADOS'):
+    for name, ticker in ASSETS.items():
+        d, s = analyze_full(name, ticker)
+        if s: all_results[name] = (d, s)
+    st.session_state['data'] = all_results
+
+if 'data' in st.session_state:
+    data = st.session_state['data']
+    
+    with tab1:
+        # LA MATRIZ TAL CUAL LA PASASTE
+        m_data = [v[1]['original'] for v in data.values()]
+        df_res = pd.DataFrame(m_data, columns=['Activo', 'Precio', 'R2 (30d)', 'Z-Diff (40d)', 'Amihud', 'Veredicto'])
         
         def style_v(val):
             if 'VENTA' in val: return 'color: #ff4b4b; font-weight: bold'
@@ -108,59 +108,58 @@ with tab1:
         
         st.dataframe(df_res.style.applymap(style_v, subset=['Veredicto']), use_container_width=True)
         
-        st.write("### 🎯 Mapa de Acción Halcón")
-        # Gráfico Scatter usando Plotly Express
-        fig_scatter = px.scatter(
-            df_res, x="Z-Diff", y="Hurst", size="Vol_Rel", 
-            text="Activo", color="Hurst", 
-            color_continuous_scale="RdYlGn_r",
-            range_x=[-4,4], range_y=[0.3, 0.7]
-        )
-        fig_scatter.add_hline(y=0.5, line_dash="dash", line_color="white", annotation_text="Punto de Equilibrio")
-        fig_scatter.update_layout(template="plotly_dark", height=500)
-        st.plotly_chart(fig_scatter, use_container_width=True)
-    else:
-        st.error("No se detectaron datos. Haz clic en 'Limpiar Caché' en el lateral.")
+        # ADN Visual
+        selected = st.selectbox("🎯 ADN del Activo:", list(data.keys()))
+        df_p = data[selected][0]
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
+        fig.add_trace(go.Candlestick(x=df_p.index, open=df_p['Open'], high=df_p['High'], low=df_p['Low'], close=df_p['Close'], name="Precio"), row=1, col=1)
+        fig.add_trace(go.Bar(x=df_p.index, y=df_p['R2_Dynamic'], name="R2"), row=2, col=1)
+        fig.update_layout(height=500, template="plotly_dark", xaxis_rangeslider_visible=False)
+        st.plotly_chart(fig, use_container_width=True)
 
-with tab2:
-    if not df_res.empty:
-        selected = st.selectbox("Seleccionar Activo para Simulación:", df_res['Activo'].unique())
-        asset_row = df_res[df_res['Activo'] == selected].iloc[0]
-        df_asset = all_plots[selected]
+    with tab2:
+        # PESTAÑA EXTRA PARA HURST Y VOLUMEN
+        st.subheader("Análisis Fractal y Presión de Volumen")
+        e_data = [v[1]['extra'] for v in data.values()]
+        df_extra = pd.DataFrame(e_data, columns=['Activo', 'Hurst (Memoria)', 'Volumen Relativo'])
         
-        # Montecarlo
-        returns = df_asset['Close'].pct_change().dropna()
-        vol = returns.tail(20).std()
-        last_price = asset_row['Precio']
+        c1, c2 = st.columns([1, 2])
+        c1.dataframe(df_extra, use_container_width=True)
         
-        sims, days = 200, 5
-        mc_results = np.zeros((days + 1, sims))
-        mc_results[0] = last_price
+        with c2:
+            fig_h = px.scatter(df_extra, x="Hurst (Memoria)", y="Volumen Relativo", text="Activo", 
+                               size="Volumen Relativo", color="Hurst (Memoria)", color_continuous_scale="Viridis")
+            fig_h.add_vline(x=0.5, line_dash="dash", line_color="gray")
+            fig_h.update_layout(template="plotly_dark", height=400)
+            st.plotly_chart(fig_h, use_container_width=True)
+
+    with tab3:
+        # MONTECARLO SENSIBLE Y DIRECCIONAL
+        st.subheader("Simulación de Trayectoria Direccional (Drift-Adjusted)")
+        sel_m = st.selectbox("Proyectar Activo:", list(data.keys()), key="mc_sel")
+        stats = data[sel_m][1]['stats']
+        
+        # Montecarlo con Drift (direccionalidad)
+        sims, days = 100, 10
+        dt = 1
+        # El drift hace que no sea plano: usa la media de retornos recientes
+        mu = stats['drift'] 
+        sigma = stats['volatilidad']
+        
+        mc_paths = np.zeros((days + 1, sims))
+        mc_paths[0] = stats['price']
+        
         for t in range(1, days + 1):
-            mc_results[t] = mc_results[t-1] * (1 + np.random.normal(0, vol, sims))
+            # Ecuación de Movimiento Browniano Geométrico
+            shock = np.random.normal(mu, sigma, sims)
+            mc_paths[t] = mc_paths[t-1] * (1 + shock)
         
-        p10 = np.percentile(mc_results, 10, axis=1)
-        p50 = np.percentile(mc_results, 50, axis=1)
-        p90 = np.percentile(mc_results, 90, axis=1)
+        p10, p50, p90 = np.percentile(mc_paths, 10, axis=1), np.percentile(mc_paths, 50, axis=1), np.percentile(mc_paths, 90, axis=1)
         
         fig_mc = go.Figure()
-        fig_mc.add_trace(go.Scatter(x=list(range(6))+list(range(6))[::-1], y=list(p90)+list(p10[::-1]), fill='toself', fillcolor='rgba(0,176,246,0.1)', line=dict(color='rgba(255,255,255,0)'), name="Rango 80%"))
-        fig_mc.add_trace(go.Scatter(x=list(range(6)), y=p50, line=dict(color='cyan', width=3), name="Media"))
-        fig_mc.update_layout(title=f"Proyección 5 Días: {selected}", template="plotly_dark", height=400)
+        fig_mc.add_trace(go.Scatter(x=list(range(days+1))+list(range(days+1))[::-1], y=list(p90)+list(p10[::-1]), fill='toself', fillcolor='rgba(0,255,200,0.1)', line=dict(color='rgba(255,255,255,0)'), name="Área de Probabilidad"))
+        fig_mc.add_trace(go.Scatter(x=list(range(days+1)), y=p50, line=dict(color='#00ffcc', width=4), name="Trayectoria Direccional"))
+        fig_mc.update_layout(template="plotly_dark", height=500, title=f"Predicción Direccional 10 Días: {sel_m}")
         st.plotly_chart(fig_mc, use_container_width=True)
         
-        st.write("---")
-        st.info(f"💡 **Hurst de {asset_row['Hurst']}**: " + 
-                ("El mercado tiende a regresar a la media." if asset_row['Hurst'] < 0.5 else "El mercado tiene inercia tendencial."))
-
-# --- SIDEBAR ---
-if st.sidebar.button("🗑️ Limpiar Caché"):
-    st.cache_data.clear()
-    st.rerun()
-
-st.sidebar.markdown("""
-### 🧠 Guía Rápida
-- **Hurst < 0.5**: Mercado reversivo. Busca comprar Z-Diff bajos y vender altos.
-- **Hurst > 0.5**: Mercado tendencial. Sigue el movimiento si el R2 es alto.
-- **Vol_Rel**: Burbujas grandes indican mayor participación institucional.
-""")
+        st.info("💡 Este modelo usa 'Drift Adjust': Si el activo tiene inercia alcista/bajista reciente, la nube se inclinará en esa dirección en lugar de ser plana.")
