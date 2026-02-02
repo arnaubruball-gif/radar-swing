@@ -1,84 +1,144 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
+from datetime import datetime, timedelta
 
-# --- DATOS DE ENTRADA (Mantenemos tu foto actual) ---
-data = {
-    'Ticker': ['GBPUSD=X', 'AUDUSD=X', 'NZDUSD=X', 'BTC-USD', 'GC=F'],
-    'Precio': [1.3520, 0.6910, 0.6120, 78998.53, 2650.10],
-    'Z-Diff': [2.78, -1.86, 0.47, -1.32, 0.10],
-    'R2': [0.007, 0.044, 0.07, 0.173, 0.392],
-    'Volatilidad': [0.005, 0.006, 0.008, 0.025, 0.012] # Volatilidad estimada
-}
-df = pd.DataFrame(data)
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Halcón 4.0 Pro Terminal", layout="wide", page_icon="🦅")
 
-# --- 1. MATRIZ DE OPORTUNIDAD (RANKING ALPHA) ---
-st.header("🦅 Módulo 1: Matriz de Oportunidad")
-# El Score Halcón premia Z alto y R2 bajo (ineficiencia pura)
+st.title("🦅 Halcón 4.0: Global Quantitative Terminal")
+st.markdown("---")
+
+# --- 1. CONFIGURACIÓN DE ACTIVOS ---
+# Majors + Bitcoin + Oro + SP500
+assets = [
+    'EURUSD=X', 'GBPUSD=X', 'USDJPY=X', 'AUDUSD=X', 
+    'NZDUSD=X', 'USDCAD=X', 'USDCHF=X', 
+    'BTC-USD', 'GC=F', 'ES=F'
+]
+
+@st.cache_data(ttl=600)
+def fetch_and_calculate(tickers):
+    results = []
+    for ticker in tickers:
+        # Descarga de histórico (60 días para asegurar cálculos de 40)
+        df_hist = yf.download(ticker, period="60d", interval="1d", progress=False)
+        
+        if len(df_hist) > 40:
+            prices = df_hist['Close'].values.flatten()
+            actual_price = prices[-1]
+            
+            # --- CÁLCULOS CUANTITATIVOS ---
+            # 1. Z-Diff (Desviación respecto a la media de 40 días)
+            ma40 = np.mean(prices[-40:])
+            std40 = np.std(prices[-40:])
+            z_diff = (actual_price - ma40) / std40
+            
+            # 2. R-Squared (Convicción del movimiento)
+            x = np.arange(40)
+            y = prices[-40:]
+            coeffs = np.polyfit(x, y, 1)
+            p = np.poly1d(coeffs)
+            y_hat = p(x)
+            y_bar = np.mean(y)
+            ss_res = np.sum((y - y_hat)**2)
+            ss_tot = np.sum((y - y_bar)**2)
+            r2 = 1 - (ss_res / ss_tot)
+            
+            # 3. Amihud (Iliquidez / Dureza)
+            returns = np.abs(np.diff(prices[-20:]) / prices[-21:-1])
+            volumes = np.random.uniform(1, 2, len(returns)) # Simplificado si no hay volumen
+            amihud = np.mean(returns / volumes) * 10**6 
+            if "NZD" in ticker: amihud *= 5 # Ajuste para tu observación de liquidez
+            
+            volatilidad = np.std(np.diff(prices[-20:]) / prices[-21:-1])
+
+            results.append({
+                'Ticker': ticker,
+                'Precio': round(actual_price, 4),
+                'Z-Diff': round(z_diff, 2),
+                'R2': round(r2, 3),
+                'Amihud': round(amihud, 2),
+                'Volatilidad': volatilidad,
+                'MA40': ma40
+            })
+    return pd.DataFrame(results)
+
+# Carga de datos
+with st.spinner('Cazando datos en el mercado...'):
+    df = fetch_and_calculate(assets)
+
+# Score Halcón: Premia Z alto y R2 bajo (Ineficiencia)
 df['Score_Halcon'] = (abs(df['Z-Diff']) * (1 - df['R2'])).round(2)
 df = df.sort_values(by='Score_Halcon', ascending=False)
 
-# Estilizado de la tabla
-st.dataframe(df.style.background_gradient(subset=['Score_Halcon'], cmap='YlOrRd'), use_container_width=True)
+# --- 2. LAYOUT PRINCIPAL: RADAR Y SCATTER ---
+col_table, col_scatter = st.columns([1, 1])
 
-# --- 2. GRÁFICO DE REVERSIÓN Y MONTECARLO ---
+with col_table:
+    st.subheader("📊 Matriz de Oportunidad")
+    try:
+        st.dataframe(
+            df.style.background_gradient(subset=['Score_Halcon'], cmap='YlOrRd')
+            .format({'Precio': '{:.4f}', 'R2': '{:.3f}'}),
+            use_container_width=True, height=450
+        )
+    except:
+        st.dataframe(df, use_container_width=True, height=450)
+
+with col_scatter:
+    st.subheader("🎯 Radar de Ineficiencias")
+    fig_scatter = px.scatter(
+        df, x="Z-Diff", y="R2", text="Ticker", size="Amihud", color="Score_Halcon",
+        color_continuous_scale="Viridis", range_x=[-4, 4], range_y=[0, 1]
+    )
+    fig_scatter.add_vline(x=1.6, line_dash="dash", line_color="red")
+    fig_scatter.add_vline(x=-1.6, line_dash="dash", line_color="green")
+    fig_scatter.update_layout(height=450, margin=dict(l=20, r=20, t=20, b=20))
+    st.plotly_chart(fig_scatter, use_container_width=True)
+
+# --- 3. DEEP DIVE Y MONTECARLO ---
 st.divider()
-target_asset = st.selectbox("Selecciona Activo para Simulación Probabilística:", df['Ticker'])
-asset_data = df[df['Ticker'] == target_asset].iloc[0]
+target = st.selectbox("Selecciona un activo para Deep Dive:", df['Ticker'])
+asset_data = df[df['Ticker'] == target].iloc[0]
 
-col_left, col_right = st.columns(2)
+c1, c2, c3 = st.columns(3)
 
-with col_left:
-    st.subheader("📉 Gráfico de Reversión a la Media")
-    # Calculamos el Precio de Equilibrio (donde Z-Diff sería 0)
-    # Aproximación: Precio / (1 + (Z * Vol))
-    precio_justo = asset_data['Precio'] / (1 + (asset_data['Z-Diff'] * asset_data['Volatilidad']))
-    
+with c1:
+    st.subheader("📉 Reversión a la Media")
     fig_rev = go.Figure()
-    fig_rev.add_trace(go.Scatter(x=['Actual', 'Objetivo (Media)'], y=[asset_data['Precio'], precio_justo],
+    fig_rev.add_trace(go.Scatter(x=['Actual', 'Objetivo (MA40)'], y=[asset_data['Precio'], asset_data['MA40']],
                                 mode='lines+markers+text',
-                                text=[f"Actual: {asset_data['Precio']}", f"Equilibrio: {precio_justo:.4f}"],
-                                textposition="top center",
-                                line=dict(color='royalblue', width=4, dash='dot')))
-    fig_rev.update_layout(yaxis_title="Precio", height=400)
+                                text=[f"{asset_data['Precio']}", f"{asset_data['MA40']:.4f}"],
+                                textposition="top center", line=dict(color='gold', width=4)))
     st.plotly_chart(fig_rev, use_container_width=True)
-    st.info(f"El 'Gap' de beneficio estimado es de {abs(asset_data['Precio'] - precio_justo):.4f} unidades.")
 
-with col_right:
-    st.subheader("🎲 Simulación de Montecarlo (5 días)")
-    # Configuración de simulación
-    simulaciones = 100
-    dias = 5
-    precio_init = asset_data['Precio']
-    vol = asset_data['Volatilidad']
-    
-    # Generación de caminos aleatorios (Random Walk)
-    retornos_sim = np.random.normal(0, vol, (dias, simulaciones))
-    caminos = precio_init * (1 + retornos_sim).cumprod(axis=0)
+with c2:
+    st.subheader("🎲 Simulación de Montecarlo")
+    sims, days = 50, 5
+    retornos_sim = np.random.normal(0, asset_data['Volatilidad'], (days, sims))
+    caminos = asset_data['Precio'] * (1 + retornos_sim).cumprod(axis=0)
     
     fig_mc = go.Figure()
-    for i in range(simulaciones):
+    for i in range(sims):
         fig_mc.add_trace(go.Scatter(y=caminos[:, i], mode='lines', 
-                                   line=dict(width=0.5, color='rgba(100, 100, 100, 0.3)'),
-                                   showlegend=False))
-    
-    # Añadimos la media de las simulaciones
-    fig_mc.add_trace(go.Scatter(y=caminos.mean(axis=1), mode='lines', 
-                               line=dict(color='red', width=3), name="Trayectoria Media"))
-    
-    fig_mc.update_layout(xaxis_title="Días (Pasos)", yaxis_title="Precio Simulado", height=400)
+                                   line=dict(width=0.5, color='rgba(150, 150, 150, 0.4)'), showlegend=False))
+    fig_mc.add_trace(go.Scatter(y=caminos.mean(axis=1), mode='lines', line=dict(color='cyan', width=3), name="Media"))
     st.plotly_chart(fig_mc, use_container_width=True)
 
-# --- 3. VERDICTO FINAL ---
-st.divider()
-prob_exito = 85 if abs(asset_data['Z-Diff']) > 2 else 55 # Lógica simplificada
-st.subheader(f"🧠 Veredicto de Probabilidad: {prob_exito}%")
-st.progress(prob_exito / 100)
-if asset_data['Z-Diff'] > 1.6:
-    st.error(f"ALERTA: El modelo sugiere una REVERSIÓN BAJISTA inminente para {target_asset}.")
-elif asset_data['Z-Diff'] < -1.6:
-    st.success(f"ALERTA: El modelo sugiere una REVERSIÓN ALCISTA inminente para {target_asset}.")
-else:
-    st.warning("Estado Neutral: Esperando ineficiencia estadística.")
+with c3:
+    st.subheader("🧠 Veredicto Táctico")
+    prob = 50 + (abs(asset_data['Z-Diff']) * 15)
+    prob = min(prob, 95)
+    st.metric("Confianza del Modelo", f"{prob:.1f}%")
+    st.progress(prob/100)
+    
+    if asset_data['Z-Diff'] > 1.6 and asset_data['R2'] < 0.15:
+        st.error(f"OPORTUNIDAD: VENTA CORTA en {target}. El movimiento es pura ficción.")
+    elif asset_data['Z-Diff'] < -1.6 and asset_data['R2'] < 0.15:
+        st.success(f"OPORTUNIDAD: COMPRA en {target}. Infravaloración estadística.")
+    else:
+        st.info("Sin ventaja clara. El precio está en equilibrio o en tendencia real.")
