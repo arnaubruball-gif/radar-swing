@@ -173,6 +173,26 @@ with tab3:
         m3.metric("Hurst", round(cross_data['hurst'], 2))
     else:
         st.error("Introduce un ticker válido.")
+    # ... (dentro de la lógica del Montecarlo en Tab 3)
+        
+        # Calculamos Niveles de Salida para dormir tranquilo
+        tp_est = p50[-1]  # Regreso a la media (Eje Central)
+        sl_panic = p10[-1] - (abs(p50[-1] - p10[-1]) * 0.5) # 5% de probabilidad extrema
+        
+        st.write(f"### 🛡️ Niveles Blindados para la Noticia ({cross_ticker})")
+        c_tp, c_sl = st.columns(2)
+        
+        # Si vas a vender GBPAUD porque el AUD está fuerte:
+        if cross_data['z'] > 0: # Caso de sobrecompra
+            c_tp.metric("TAKE PROFIT (Media)", f"{tp_est:.4f}")
+            c_sl.metric("STOP LOSS (Pánico)", f"{p90[-1]:.4f}")
+        else: # Caso de sobreventa (como tu GBPAUD actual)
+            c_tp.metric("TAKE PROFIT (Media)", f"{tp_est:.4f}")
+            c_sl.metric("STOP LOSS (Pánico)", f"{sl_panic:.4f}")
+
+        # Dibujamos en el gráfico
+        fig_mc.add_hline(y=tp_est, line_dash="dot", line_color="green", annotation_text="TP (Media)")
+        fig_mc.add_hline(y=sl_panic, line_dash="dot", line_color="red", annotation_text="SL (Pánico)")
 
 st.sidebar.markdown("""
 ### 🧠 Guía de Operación
