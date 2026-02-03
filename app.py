@@ -88,7 +88,7 @@ with st.sidebar:
     st.info("**3. Vol-Monitor:** Si la volatilidad toca el 'Umbral de Pánico', el giro será violento.")
     st.warning("**Riesgo:** Si Sentinel marca > 75%, el mercado es irracional. Reduce el apalancamiento.")
     st.markdown("---")
-    st.caption("Argos Terminal | v1.6")
+    st.caption("Argos Terminal | v1.7")
 
 # --- 4. PANEL DE CONTROL ARGOS ---
 st.title("👁️ ARGOS | Full Market Terminal")
@@ -107,8 +107,6 @@ ASSETS = {
     'OTHERS': ['BTC-USD', 'ETH-USD', 'GC=F', 'SI=F', '^SPX', '^IXIC', '^FTSE']
 }
 all_tickers = ASSETS['MAJORS'] + ASSETS['CROSSES'] + ASSETS['OTHERS']
-
-# ... (Tabs 1 a 4 se mantienen con su lógica original) ...
 
 with tab1:
     st.subheader("Ineficiencias Detectadas")
@@ -146,22 +144,64 @@ with tab2:
         st.plotly_chart(fig_h, use_container_width=True)
 
 with tab3:
-    st.subheader("Simulación Direccional")
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        cross_ticker = st.text_input("Ticker:", "AUDUSD=X")
-        sim_days = st.slider("Días", 5, 20, 10)
-    cross_data = analyze_asset(cross_ticker)
-    if cross_data:
-        paths = np.zeros((sim_days + 1, 250))
-        paths[0] = cross_data['price']
-        for t in range(1, sim_days + 1):
-            paths[t] = paths[t-1] * (1 + np.random.normal(cross_data['drift'], cross_data['vol'], 250))
-        p50 = np.percentile(paths, 50, axis=1)
-        with c2:
+    st.subheader("🎲 Simulación de Montecarlo & Datos Críticos")
+    mc_col1, mc_col2 = st.columns([1, 3])
+    
+    with mc_col1:
+        ticker_mc = st.text_input("Activo:", "GBPUSD=X")
+        dias_sim = st.slider("Días de Proyección", 5, 30, 15)
+        num_sim = 100 # Número de trayectorias
+        
+    data_mc = analyze_asset(ticker_mc)
+    
+    if data_mc:
+        # Cálculo de trayectorias
+        last_price = data_mc['price']
+        drift = data_mc['drift']
+        vol = data_mc['vol']
+        
+        simulaciones = np.zeros((dias_sim + 1, num_sim))
+        simulaciones[0] = last_price
+        
+        for i in range(1, dias_sim + 1):
+            shocks = np.random.normal(drift, vol, num_sim)
+            simulaciones[i] = simulaciones[i-1] * (1 + shocks)
+        
+        # Percentiles para la nube
+        p10 = np.percentile(simulaciones, 10, axis=1)
+        p50 = np.percentile(simulaciones, 50, axis=1)
+        p90 = np.percentile(simulaciones, 90, axis=1)
+        
+        with mc_col1:
+            st.metric("Drift (Inercia)", f"{drift*100:.4f}%")
+            st.metric("Z-Diff (Tensión)", round(data_mc['z'], 2))
+            st.metric("Hurst (Memoria)", round(data_mc['hurst'], 2))
+            
+        with mc_col2:
             fig_mc = go.Figure()
-            fig_mc.add_trace(go.Scatter(x=list(range(sim_days+1)), y=p50, line=dict(color='#00ffcc', width=4), name="Drift Argos"))
-            fig_mc.update_layout(template="plotly_dark", height=500)
+            # Nube de dispersión (Sombreado)
+            fig_mc.add_trace(go.Scatter(
+                x=list(range(dias_sim+1)) + list(range(dias_sim+1))[::-1],
+                y=list(p90) + list(p10[::-1]),
+                fill='toself',
+                fillcolor='rgba(0, 255, 204, 0.15)',
+                line=dict(color='rgba(255,255,255,0)'),
+                name='Nube de Probabilidad (80%)'
+            ))
+            # Línea de Drift central
+            fig_mc.add_trace(go.Scatter(
+                x=list(range(dias_sim+1)), y=p50,
+                line=dict(color='#00ffcc', width=3),
+                name='Proyección Media (Drift)'
+            ))
+            fig_mc.update_layout(
+                template="plotly_dark", 
+                title=f"Proyección de Dispersión: {ticker_mc}",
+                xaxis_title="Días Futuros",
+                yaxis_title="Precio Estm.",
+                height=500,
+                showlegend=True
+            )
             st.plotly_chart(fig_mc, use_container_width=True)
 
 with tab4:
@@ -175,19 +215,13 @@ with tab4:
 
 with tab5:
     st.subheader("🌊 Vol-Monitor & Veredicto Final")
-    vol_ticker = st.text_input("Activo para Análisis Profundo:", "GBPUSD=X")
+    vol_ticker = st.text_input("Activo para Análisis Profundo:", "GBPUSD=X", key="vol_input")
     vol_data = analyze_asset(vol_ticker)
     
     if vol_data:
-        # --- VEREDICTO FINAL ARGOS ---
         st.markdown('<div class="veredicto-box">', unsafe_allow_html=True)
         st.write("### 🧠 Veredicto de Inteligencia ARGOS")
-        
-        # Lógica de Veredicto
-        h = vol_data['hurst']
-        z = vol_data['z']
-        r2 = vol_data['r2']
-        
+        h, z, r2 = vol_data['hurst'], vol_data['z'], vol_data['r2']
         col_v1, col_v2 = st.columns(2)
         with col_v1:
             if h < 0.45 and abs(z) > 1.6 and r2 < 0.15:
@@ -199,23 +233,18 @@ with tab5:
             else:
                 st.success("⚪ RÉGIMEN NEUTRAL / RUIDO")
                 st.write("No hay una ventaja estadística clara. El mercado está en equilibrio o esperando un catalizador.")
-        
         with col_v2:
             st.write(f"**Confianza Estadística:** {int((1-r2)*100)}%")
             st.write(f"**Nivel de Memoria (Hurst):** {h:.2f}")
             st.write(f"**Desviación (Z-Score):** {z:.2f}")
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # --- GRÁFICOS DE VOLATILIDAD ---
         st.divider()
         df_vol = vol_data['df'].copy()
         df_vol['Vol_Mean'] = df_vol['Ret'].rolling(20).std()
         df_vol['Upper_Vol'] = df_vol['Vol_Mean'].rolling(20).mean() + (df_vol['Vol_Mean'].rolling(20).std() * 2)
-        
         fig_vol = go.Figure()
         fig_vol.add_trace(go.Scatter(x=df_vol.index, y=df_vol['Vol_Mean'], name="Volatilidad Actual", line=dict(color='#00ffcc')))
         fig_vol.add_trace(go.Scatter(x=df_vol.index, y=df_vol['Upper_Vol'], name="Umbral Crítico", line=dict(dash='dash', color='red')))
-        fig_vol.update_layout(template="plotly_dark", title="Régimen de Volatilidad", height=400)
+        fig_vol.update_layout(template="plotly_dark", height=400)
         st.plotly_chart(fig_vol, use_container_width=True)
-    else:
-        st.info("Introduce un ticker para generar el veredicto.")
