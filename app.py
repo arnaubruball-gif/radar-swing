@@ -80,7 +80,27 @@ def fetch_risk_metrics():
     
     return vix_val, ratio_gold_spx, dxy_mom, score, risk_data['VIX']
 
-# --- 3. PANEL DE CONTROL ARGOS ---
+# --- 3. SIDEBAR: MANUAL DE OPERACIONES ARGOS ---
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/684/684831.png", width=80)
+    st.title("MANUAL ARGOS")
+    st.markdown("---")
+    
+    st.subheader("1. La Matriz ADN")
+    st.info("**R2 (Convicción):** Si es bajo (<0.10), el precio se mueve sin apoyo de volumen real. Es una 'ficción'.")
+    st.info("**Z-Diff (Goma):** Mide la tensión. Valores > 1.6 o < -1.6 indican que el elástico está a punto de romper.")
+    
+    st.subheader("2. Radar Fractal")
+    st.info("**Hurst < 0.50:** El mercado tiene memoria. Lo que sube, bajará. Es zona de Reversión a la Media.")
+    st.info("**Hurst > 0.50:** El mercado tiene inercia. Es zona de Tendencia.")
+    
+    st.subheader("3. Sentinel (Riesgo)")
+    st.warning("Si el Score es > 75%, ignora las señales de reversión. El pánico rompe la estadística.")
+    
+    st.markdown("---")
+    st.caption("Argos v1.0 | Vigilancia Fractal")
+
+# --- 4. PANEL DE CONTROL ARGOS ---
 st.title("👁️ ARGOS | Full Market Terminal")
 
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -101,7 +121,7 @@ with tab1:
     st.subheader("Ineficiencias Detectadas")
     if st.button('📡 ESCANEAR MERCADOS'):
         results = []
-        with st.spinner('Procesando...'):
+        with st.spinner('Argos procesando flujo...'):
             for t in all_tickers:
                 data = analyze_asset(t)
                 if data:
@@ -179,5 +199,3 @@ with tab4:
         st.plotly_chart(px.area(vix_df, y='Close', title="VIX Monitor").update_layout(template="plotly_dark", height=300), use_container_width=True)
     with cr:
         st.plotly_chart(px.line(g_spx, title="Ratio Oro/SPX").update_layout(template="plotly_dark", height=300), use_container_width=True)
-
-st.sidebar.markdown("### 👁️ ARGOS\nVigilancia fractal de mercados.")
