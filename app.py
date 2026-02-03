@@ -13,7 +13,7 @@ st.markdown("""
     <style>
     .main { background-color: #0e1117; }
     .stMetric { background-color: #1e2130; padding: 10px; border-radius: 10px; border: 1px solid #3d4463; }
-    .veredicto-box { padding: 20px; border-radius: 10px; border: 2px solid #3d4463; background-color: #161b22; margin-top: 20px; }
+    .veredicto-box { padding: 20px; border-radius: 10px; border: 2px solid #3d4463; background-color: #161b22; margin-top: 20px; margin-bottom: 20px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -83,18 +83,14 @@ with st.sidebar:
     st.markdown("---")
     st.subheader("Manual de Operaciones")
     st.info("**Hurst < 0.50:** El mercado busca su media.")
-    st.info("**Z-Diff > 1.6:** Goma estirada (Sobreventa/compra).")
-    st.info("**R2 < 0.10:** El movimiento es ruido, no hay dinero real detrás.")
+    st.info("**Z-Diff > 1.6:** Goma estirada.")
+    st.info("**R2 < 0.10:** Ruido / Ficción.")
     st.markdown("---")
-    st.caption("Argos Terminal | v1.8")
+    st.caption("Argos Terminal | v1.9")
 
-# --- 4. DEFINICIÓN DE PESTAÑAS (Orden Crítico) ---
+# --- 4. PESTAÑAS ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "📊 Matriz ADN", 
-    "🎯 Radar Fractal", 
-    "🎲 Montecarlo", 
-    "🛡️ Sentinel",
-    "🌊 Vol-Monitor"
+    "📊 Matriz ADN", "🎯 Radar Fractal", "🎲 Montecarlo", "🛡️ Sentinel", "🌊 Vol-Monitor"
 ])
 
 ASSETS = {
@@ -104,7 +100,6 @@ ASSETS = {
 }
 all_tickers = ASSETS['MAJORS'] + ASSETS['CROSSES'] + ASSETS['OTHERS']
 
-# Llenado de Pestañas
 with tab1:
     st.subheader("Escaneo de Ineficiencias")
     if st.button('📡 INICIAR ESCANEO'):
@@ -117,8 +112,7 @@ with tab1:
                     if data['z'] > 1.6: v = "🚨 VENTA (Ficción)"
                     elif data['z'] < -1.6: v = "🟢 COMPRA (Oportunidad)"
                 results.append([t.replace('=X',''), f"{data['price']:.4f}", round(data['r2'],3), round(data['z'],2), v])
-        df_res = pd.DataFrame(results, columns=['Activo', 'Precio', 'R2', 'Z-Diff', 'Veredicto'])
-        st.dataframe(df_res, use_container_width=True)
+        st.dataframe(pd.DataFrame(results, columns=['Activo', 'Precio', 'R2', 'Z-Diff', 'Veredicto']), use_container_width=True)
 
 with tab2:
     st.subheader("Mapa Hurst vs Z-Diff")
@@ -136,34 +130,25 @@ with tab2:
 with tab3:
     st.subheader("🎲 Proyección de Montecarlo & Dispersión")
     mc_col1, mc_col2 = st.columns([1, 3])
-    
     with mc_col1:
         ticker_mc = st.text_input("Activo:", "GBPUSD=X", key="mc_ticker")
         dias_sim = st.slider("Días", 5, 30, 15)
-        
     data_mc = analyze_asset(ticker_mc)
     if data_mc:
-        # Simulación
-        num_sim = 100
-        simulaciones = np.zeros((dias_sim + 1, num_sim))
+        simulaciones = np.zeros((dias_sim + 1, 100))
         simulaciones[0] = data_mc['price']
         for i in range(1, dias_sim + 1):
-            simulaciones[i] = simulaciones[i-1] * (1 + np.random.normal(data_mc['drift'], data_mc['vol'], num_sim))
-        
+            simulaciones[i] = simulaciones[i-1] * (1 + np.random.normal(data_mc['drift'], data_mc['vol'], 100))
         p10, p50, p90 = np.percentile(simulaciones, 10, axis=1), np.percentile(simulaciones, 50, axis=1), np.percentile(simulaciones, 90, axis=1)
-        
         with mc_col1:
             st.metric("Drift", f"{data_mc['drift']*100:.4f}%")
             st.metric("Z-Diff", round(data_mc['z'], 2))
             st.metric("Hurst", round(data_mc['hurst'], 2))
-            
         with mc_col2:
             fig_mc = go.Figure()
-            # Nube
             fig_mc.add_trace(go.Scatter(x=list(range(dias_sim+1)) + list(range(dias_sim+1))[::-1], y=list(p90) + list(p10[::-1]), fill='toself', fillcolor='rgba(0, 255, 204, 0.1)', line=dict(color='rgba(255,255,255,0)'), name='Rango 80%'))
-            # Línea central
             fig_mc.add_trace(go.Scatter(x=list(range(dias_sim+1)), y=p50, line=dict(color='#00ffcc', width=3), name='Trayectoria Esperada'))
-            fig_mc.update_layout(template="plotly_dark", height=500, margin=dict(l=10,r=10,t=10,b=10))
+            fig_mc.update_layout(template="plotly_dark", height=500)
             st.plotly_chart(fig_mc, use_container_width=True)
 
 with tab4:
@@ -173,18 +158,36 @@ with tab4:
     k1.metric("SCORE RIESGO", f"{r_score}%")
     k2.metric("VIX", f"{vix_v:.2f}")
     k3.metric("MOMENTUM DXY", f"{dxy_m:.2f}%")
-    st.plotly_chart(px.area(vix_df, y='Close').update_layout(template="plotly_dark", height=300), use_container_width=True)
+    st.plotly_chart(px.area(vix_df, y='Close', title="VIX Monitor").update_layout(template="plotly_dark", height=350), use_container_width=True)
 
 with tab5:
     st.subheader("🌊 Vol-Monitor & Veredicto")
-    vol_ticker = st.text_input("Activo:", "GBPUSD=X", key="vol_ticker")
+    vol_ticker = st.text_input("Activo para Análisis Profundo:", "GBPUSD=X", key="vol_ticker_input")
     v_data = analyze_asset(vol_ticker)
+    
     if v_data:
+        # 1. Cuadro de Veredicto
         st.markdown('<div class="veredicto-box">', unsafe_allow_html=True)
         st.write("### 🧠 Veredicto ARGOS")
-        if v_data['hurst'] < 0.45 and abs(v_data['z']) > 1.6:
-            st.error(f"🚨 SEÑAL FUERTE DE REVERSIÓN: {'VENTA' if v_data['z'] > 0 else 'COMPRA'}")
+        h, z, r2 = v_data['hurst'], v_data['z'], v_data['r2']
+        if h < 0.45 and abs(z) > 1.6:
+            st.error(f"🚨 SEÑAL FUERTE DE REVERSIÓN: {'VENTA' if z > 0 else 'COMPRA'}")
+            st.write("El sistema detecta una anomalía estadística severa. Alta probabilidad de retorno a la media.")
+        elif r2 > 0.40:
+            st.info("💎 TENDENCIA INSTITUCIONAL REAL")
+            st.write("Movimiento validado por flujo de dinero. No operar en contra.")
         else:
-            st.success("⚪ RÉGIMEN ESTABLE / RUIDO")
-        st.write(f"Confianza: {int((1-v_data['r2'])*100)}% | Hurst: {v_data['hurst']:.2f}")
+            st.success("⚪ RÉGIMEN NEUTRAL / RUIDO")
+            st.write("No hay ventaja estadística clara en este momento.")
+        st.write(f"**Confianza:** {int((1-r2)*100)}% | **Hurst:** {h:.2f} | **Z-Diff:** {z:.2f}")
         st.markdown('</div>', unsafe_allow_html=True)
+        
+        # 2. Gráfico de Volatilidad (Asegurando que esté fuera del bloque anterior)
+        st.divider()
+        df_v = v_data['df'].copy()
+        df_v['Vol_Mean'] = df_v['Ret'].rolling(20).std()
+        df_v['Upper_Vol'] = df_v['Vol_Mean'].rolling(20).mean() + (df_v['Vol_Mean'].rolling(20).std() * 2)
+        
+        fig_vol = go.Figure()
+        fig_vol.add_trace(go.Scatter(x=df_v.index, y=df_v['Vol_Mean'], name="Volatilidad Actual", line=dict(color='#00ffcc')))
+        fig_vol.add_trace(go.Scatter(x=df_v.index, y=df_v['Upper_Vol'], name="Umbral de Pánico", line
