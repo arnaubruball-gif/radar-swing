@@ -7,8 +7,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 
-# --- 1. CONFIGURACIÓN DE ÉLITE ---
-st.set_page_config(page_title="Argos - Full Market Terminal", layout="wide")
+# --- 1. CONFIGURACIÓN ARGOS ---
+st.set_page_config(page_title="ARGOS - Full Market Terminal", layout="wide")
 
 st.markdown("""
     <style>
@@ -17,7 +17,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MOTOR DE ANÁLISIS ---
+# --- 2. MOTOR DE CÁLCULO ---
 def calcular_hurst(ts):
     if len(ts) < 30: return 0.5
     lags = range(2, 20)
@@ -32,12 +32,10 @@ def analyze_asset(ticker):
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # --- Lógica Original Matriz ---
         df['Ret'] = df['Close'].pct_change()
         df['Vol_Proxy'] = (df['High'] - df['Low']) * 100000
         df['RMF'] = df['Close'] * df['Vol_Proxy']
         
-        # R2 Dinámico (30d)
         r2_series = []
         for i in range(len(df)):
             if i < 30: r2_series.append(0); continue
@@ -46,15 +44,12 @@ def analyze_asset(ticker):
             r2_series.append(r2)
         df['R2_Dynamic'] = r2_series
         
-        # Z-Diff (40d)
         diff = df['Ret'].rolling(40).sum() - df['RMF'].pct_change().rolling(40).sum()
         z_val = ((diff - diff.rolling(40).mean()) / (diff.rolling(40).std() + 1e-10)).iloc[-1]
-        
-        # Amihud (Iliquidez)
         amihud = (df['Ret'].abs() / (df['RMF'].replace(0, np.nan) / 1e6)).fillna(df['Ret'].abs() * 100).rolling(20).mean().iloc[-1]
         
-        # Hurst y Volatilidad
-        hurst = calcular_hurst(df['Close'].values.flatten()[-50:])
+        prices = df['Close'].values.flatten().astype(float)
+        hurst = calcular_hurst(prices[-50:])
         vol = df['Ret'].tail(30).std()
         drift = df['Ret'].tail(7).mean() 
         
@@ -74,12 +69,10 @@ def fetch_risk_metrics():
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         risk_data[name] = df
     
-    # Cálculos de Riesgo
     vix_val = risk_data['VIX']['Close'].iloc[-1]
     ratio_gold_spx = risk_data['GOLD']['Close'] / risk_data['SPX']['Close']
     dxy_mom = risk_data['DXY']['Close'].pct_change(10).iloc[-1] * 100
     
-    # Puntuación de Riesgo (0-100)
     score = 0
     if vix_val > 20: score += 25
     if vix_val > risk_data['VIX']['Close'].rolling(20).mean().iloc[-1]: score += 25
@@ -88,17 +81,16 @@ def fetch_risk_metrics():
     
     return vix_val, ratio_gold_spx, dxy_mom, score, risk_data['VIX']
 
-# --- 3. PANEL DE CONTROL ---
-st.title("🦅 Halcón de Guerra 4.0 | Full Market Intelligence")
+# --- 3. PANEL DE CONTROL ARGOS ---
+st.title("👁️ ARGOS | Full Market Terminal")
 
 tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 Matriz ADN Completa", 
-    "🦅 Radar Fractal", 
-    "🎲 Montecarlo de Cruces", 
+    "📊 Matriz ADN", 
+    "🎯 Radar Fractal", 
+    "🎲 Montecarlo Direccional", 
     "🛡️ Sentinel: Riesgo Global"
 ])
 
-# --- LISTA EXPANDIDA DE ACTIVOS ---
 ASSETS = {
     'MAJORS': ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'NZDUSD=X', 'USDJPY=X', 'USDCHF=X', 'USDCAD=X'],
     'CROSSES': ['EURGBP=X', 'EURJPY=X', 'GBPJPY=X', 'EURAUD=X', 'GBPAUD=X', 'AUDJPY=X', 'CHFJPY=X'],
@@ -107,10 +99,10 @@ ASSETS = {
 all_tickers = ASSETS['MAJORS'] + ASSETS['CROSSES'] + ASSETS['OTHERS']
 
 with tab1:
-    st.subheader("Ineficiencias en Pares Mayores, Cruces y Commodities")
-    if st.button('📡 ESCANEAR TODOS LOS MERCADOS'):
+    st.subheader("Ineficiencias Detectadas")
+    if st.button('📡 ESCANEAR MERCADOS'):
         results = []
-        with st.spinner('Analizando liquidez y flujo...'):
+        with st.spinner('Procesando...'):
             for t in all_tickers:
                 data = analyze_asset(t)
                 if data:
@@ -127,30 +119,26 @@ with tab1:
             if 'TENDENCIA' in val: return 'background-color: #112244; color: #1c83e1; font-weight: bold'
             return ''
         st.dataframe(df_res.style.applymap(style_v, subset=['Veredicto']), use_container_width=True)
-    else:
-        st.info("Haz clic en el botón superior para cargar la matriz completa.")
 
 with tab2:
-    st.subheader("Mapa de Memoria del Mercado (Hurst vs Z-Diff)")
+    st.subheader("Mapa de Memoria (Hurst vs Z-Diff)")
     h_data = []
-    with st.spinner('Calculando dimensiones fractales...'):
-        for t in all_tickers:
-            d = analyze_asset(t)
-            if d: h_data.append({'Activo': t.replace('=X',''), 'Hurst': d['hurst'], 'Z-Diff': d['z']})
+    for t in all_tickers:
+        d = analyze_asset(t)
+        if d: h_data.append({'Activo': t.replace('=X',''), 'Hurst': d['hurst'], 'Z-Diff': d['z']})
     if h_data:
         df_h = pd.DataFrame(h_data)
-        fig_h = px.scatter(df_h, x="Z-Diff", y="Hurst", text="Activo", color="Hurst", 
-                           color_continuous_scale="RdYlGn_r", range_x=[-4, 4], range_y=[0.3, 0.7])
+        fig_h = px.scatter(df_h, x="Z-Diff", y="Hurst", text="Activo", color="Hurst", color_continuous_scale="RdYlGn_r", range_x=[-4, 4], range_y=[0.2, 0.8])
         fig_h.add_hline(y=0.5, line_dash="dash", line_color="white")
         fig_h.update_layout(template="plotly_dark", height=500)
         st.plotly_chart(fig_h, use_container_width=True)
 
 with tab3:
-    st.subheader("Simulación Direccional (Especial para Cruces)")
+    st.subheader("Simulación Direccional")
     c1, c2 = st.columns([1, 3])
     with c1:
-        cross_ticker = st.text_input("Introduce el Cruce (ej: EURGBP=X, CADJPY=X):", "EURGBP=X")
-        sim_days = st.slider("Días de proyección", 5, 20, 10)
+        cross_ticker = st.text_input("Ticker (ej: AUDUSD=X):", "AUDUSD=X")
+        sim_days = st.slider("Días", 5, 20, 10)
     cross_data = analyze_asset(cross_ticker)
     if cross_data:
         paths = np.zeros((sim_days + 1, 250))
@@ -160,45 +148,27 @@ with tab3:
         p10, p50, p90 = np.percentile(paths, 10, axis=1), np.percentile(paths, 50, axis=1), np.percentile(paths, 90, axis=1)
         with c2:
             fig_mc = go.Figure()
-            fig_mc.add_trace(go.Scatter(x=list(range(sim_days+1))+list(range(sim_days+1))[::-1], y=list(p90)+list(p10[::-1]), fill='toself', fillcolor='rgba(0,255,150,0.1)', line=dict(color='rgba(255,255,255,0)'), name="Rango Probable"))
-            fig_mc.add_trace(go.Scatter(x=list(range(sim_days+1)), y=p50, line=dict(color='#00ffcc', width=4), name="Inercia (Drift)"))
+            fig_mc.add_trace(go.Scatter(x=list(range(sim_days+1))+list(range(sim_days+1))[::-1], y=list(p90)+list(p10[::-1]), fill='toself', fillcolor='rgba(0,255,150,0.1)', line=dict(color='rgba(255,255,255,0)'), name="Probabilidad"))
+            fig_mc.add_trace(go.Scatter(x=list(range(sim_days+1)), y=p50, line=dict(color='#00ffcc', width=4), name="Drift Argos"))
             fig_mc.update_layout(template="plotly_dark", height=500)
             st.plotly_chart(fig_mc, use_container_width=True)
         m1, m2, m3 = st.columns(3)
-        m1.metric("Drift (7d)", f"{cross_data['drift']*100:.4f}%")
-        m2.metric("Z-Diff", round(cross_data['z'], 2))
+        m1.metric("Inercia", f"{cross_data['drift']*100:.4f}%")
+        m2.metric("Z-Score", round(cross_data['z'], 2))
         m3.metric("Hurst", round(cross_data['hurst'], 2))
 
 with tab4:
-    st.subheader("🛡️ Sentinel: Análisis de Riesgo y Sentimiento")
+    st.subheader("🛡️ Sentinel: Riesgo Global")
     vix_v, g_spx, dxy_m, r_score, vix_df = fetch_risk_metrics()
-    
     k1, k2, k3 = st.columns(3)
-    clima = "🔴 PÁNICO" if r_score >= 75 else ("🟡 CAUTELA" if r_score >= 50 else "🟢 CALMA")
-    k1.metric("RIESGO GLOBAL", f"{r_score}%", clima)
-    k2.metric("VIX (Miedo)", f"{vix_v:.2f}", f"{vix_v - vix_df['Close'].iloc[-2]:.2f}", delta_color="inverse")
-    k3.metric("MOMENTUM DXY (10d)", f"{dxy_m:.2f}%", delta_color="inverse")
-
+    k1.metric("SCORE RIESGO", f"{r_score}%", "🔴" if r_score >= 75 else "🟢")
+    k2.metric("VIX", f"{vix_v:.2f}")
+    k3.metric("MOMENTUM DXY", f"{dxy_m:.2f}%")
     st.divider()
-    col_left, col_right = st.columns(2)
-    
-    with col_left:
-        st.write("**Histórico VIX (Volatilidad)**")
-        fig_v = px.area(vix_df, y='Close', color_discrete_sequence=['orange'])
-        fig_v.update_layout(template="plotly_dark", height=300, showlegend=False)
-        st.plotly_chart(fig_v, use_container_width=True)
-        
-    with col_right:
-        st.write("**Ratio Refugio: ORO / S&P 500**")
-        fig_r = px.line(g_spx, color_discrete_sequence=['gold'])
-        fig_r.update_layout(template="plotly_dark", height=300, showlegend=False)
-        st.plotly_chart(fig_r, use_container_width=True)
-    
-    st.info("💡 **Tip del Halcón:** Un Riesgo Global > 50% sugiere reducir el tamaño de posición en pares cruzados, ya que la correlación con el USD tiende a absorberlo todo.")
+    cl, cr = st.columns(2)
+    with cl:
+        st.plotly_chart(px.area(vix_df, y='Close', title="VIX Monitor").update_layout(template="plotly_dark", height=300), use_container_width=True)
+    with cr:
+        st.plotly_chart(px.line(g_spx, title="Ratio Oro/SPX").update_layout(template="plotly_dark", height=300), use_container_width=True)
 
-st.sidebar.markdown("""
-### 🧠 Guía de Operación
-1. **Filtro Matriz**: Busca activos en **VENTA** o **COMPRA** donde el R2 sea muy bajo (<0.10).
-2. **Confirmación Fractal**: Si el Z-Diff es extremo, verifica en el Radar que el **Hurst sea < 0.50**. Esto confirma que el precio tiende a volver.
-3. **Sentimiento**: Revisa el Dashboard **Sentinel** para asegurar que el mercado no está en fase de pánico total.
-""")
+st.sidebar.markdown("### 👁️ Sistema ARGOS\n Vigil
