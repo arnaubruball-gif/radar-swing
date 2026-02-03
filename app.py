@@ -34,12 +34,10 @@ def analyze_asset(ticker):
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
-        # Cálculo de Retornos y Flujo (RMF)
         df['Ret'] = df['Close'].pct_change()
         df['Vol_Proxy'] = (df['High'] - df['Low']) * 100000
         df['RMF'] = df['Close'] * df['Vol_Proxy']
         
-        # R-Cuadrado Dinámico
         r2_series = []
         for i in range(len(df)):
             if i < 30: r2_series.append(0); continue
@@ -48,11 +46,9 @@ def analyze_asset(ticker):
             r2_series.append(r2)
         df['R2_Dynamic'] = r2_series
         
-        # Z-Diff (Tensión)
         diff = df['Ret'].rolling(40).sum() - df['RMF'].pct_change().rolling(40).sum()
         z_val = ((diff - diff.rolling(40).mean()) / (diff.rolling(40).std() + 1e-10)).iloc[-1]
         
-        # Hurst y EMA
         prices = df['Close'].values.flatten().astype(float)
         hurst = calcular_hurst(prices[-50:])
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean()
@@ -67,15 +63,20 @@ def analyze_asset(ticker):
 
 @st.cache_data(ttl=3600)
 def fetch_risk_metrics():
-    tickers = {'VIX': '^VIX', 'GOLD': 'GC=F'}
+    # Incluimos DXY y SPX para el Radar de Riesgo
+    tickers = {'VIX': '^VIX', 'DXY': 'DX-Y.NYB', 'GOLD': 'GC=F', 'SPX': '^GSPC'}
     risk_data = {}
     for name, t in tickers.items():
         df = yf.download(t, period='60d', interval='1d', progress=False)
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         risk_data[name] = df
     vix_val = float(risk_data['VIX']['Close'].iloc[-1])
-    score = 50 if vix_val > 20 else 10
-    return vix_val, score, risk_data['VIX']
+    dxy_mom = float(risk_data['DXY']['Close'].pct_change(10).iloc[-1] * 100)
+    
+    score = 0
+    if vix_val > 20: score += 50
+    if dxy_mom > 0: score += 50
+    return vix_val, score, dxy_mom, risk_data['VIX']
 
 # --- 3. LISTA DE ACTIVOS ---
 ASSETS = [
@@ -91,13 +92,14 @@ with st.sidebar:
     st.divider()
     st.info("🎯 Hurst < 0.45: Reversión")
     st.info("📏 Z-Diff > 1.6: Venta")
-    st.info("☁️ R2 < 0.12: Ruido")
+    st.info("☁️ R2 < 0.12: Ruido (Oportunidad)")
 
 # --- 5. PESTAÑAS ---
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Matriz ADN", "🎯 Radar", "🎲 Montecarlo", "🛡️ Sentinel", "🌊 Vol-Monitor"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Matriz ADN", "🎯 Radar Fractal", "🎲 Montecarlo", "🛡️ Sentinel", "🌊 Vol-Monitor"])
 
 with tab1:
-    if st.button('📡 ESCANEAR MERCADO'):
+    st.subheader("Escaneo de Ineficiencias Globales")
+    if st.button('📡 INICIAR ESCANEO'):
         results = []
         pbar = st.progress(0)
         for i, t in enumerate(ASSETS):
@@ -111,41 +113,82 @@ with tab1:
             pbar.progress((i + 1) / len(ASSETS))
         st.dataframe(pd.DataFrame(results, columns=['Activo', 'Precio', 'R2', 'Z-Diff', 'Hurst', 'Veredicto']), use_container_width=True)
 
+with tab2:
+    st.subheader("Mapa de Oportunidades (Hurst vs Z-Diff)")
+    radar_list = []
+    for t in ASSETS:
+        d = analyze_asset(t)
+        if d: radar_list.append({'Activo': t.replace('=X',''), 'Hurst': d['hurst'], 'Z-Diff': d['z'], 'R2': d['r2']})
+    if radar_list:
+        df_radar = pd.DataFrame(radar_list)
+        fig_radar = px.scatter(df_radar, x="Z-Diff", y="Hurst", text="Activo", color="R2", color_continuous_scale="Viridis")
+        fig_radar.add_hline(y=0.5, line_dash="dash", line_color="red")
+        fig_radar.update_layout(template="plotly_dark", height=500)
+        st.plotly_chart(fig_radar, use_container_width=True)
+
 with tab3:
-    tk_mc = st.selectbox("Activo Montecarlo:", ASSETS)
+    st.subheader("Simulación Direccional Montecarlo")
+    mc_c1, mc_c2 = st.columns([1, 3])
+    with mc_c1:
+        tk_mc = st.selectbox("Activo:", ASSETS, key="mc_select")
+        days = st.slider("Días", 5, 30, 15)
     d_mc = analyze_asset(tk_mc)
     if d_mc:
-        days = 15
         sims = np.zeros((days + 1, 100))
         sims[0] = d_mc['price']
         for i in range(1, days + 1):
             sims[i] = sims[i-1] * (1 + np.random.normal(d_mc['drift'], d_mc['vol'], 100))
         
+        with mc_c1:
+            st.metric("Fair Value Est.", f"{np.mean(sims[-1]):.4f}")
+            st.metric("Z-Diff", f"{d_mc['z']:.2f}")
+
         fig_mc = go.Figure()
         x_axis = list(range(days + 1))
-        fig_mc.add_trace(go.Scatter(x=x_axis + x_axis[::-1], y=list(np.percentile(sims, 90, axis=1)) + list(np.percentile(sims, 10, axis=1)[::-1]), fill='toself', fillcolor='rgba(0, 255, 204, 0.1)', line=dict(color='rgba(0,0,0,0)'), name='Confianza'))
-        fig_mc.add_trace(go.Scatter(x=x_axis, y=np.percentile(sims, 50, axis=1), line=dict(color='#00ffcc', width=3), name='Trayectoria'))
-        st.plotly_chart(fig_mc, use_container_width=True)
+        p90, p50, p10 = np.percentile(sims, 90, axis=1), np.percentile(sims, 50, axis=1), np.percentile(sims, 10, axis=1)
+        fig_mc.add_trace(go.Scatter(x=x_axis + x_axis[::-1], y=list(p90) + list(p10[::-1]), fill='toself', fillcolor='rgba(0, 255, 204, 0.1)', line=dict(color='rgba(0,0,0,0)'), name='Rango Probable'))
+        fig_mc.add_trace(go.Scatter(x=x_axis, y=p50, line=dict(color='#00ffcc', width=3), name='Eje Central'))
+        st.plotly_chart(fig_mc.update_layout(template="plotly_dark", height=450), use_container_width=True)
+
+with tab4:
+    st.subheader("🛡️ Sentinel: Riesgo Global")
+    vix, s_risk, dxy_m, vix_df = fetch_risk_metrics()
+    k1, k2, k3 = st.columns(3)
+    k1.metric("SCORE RIESGO", f"{s_risk}%")
+    k2.metric("VIX", f"{vix:.2f}")
+    k3.metric("MOMENTUM DXY", f"{dxy_m:.2f}%")
+    st.plotly_chart(px.area(vix_df, y='Close', title="VIX Monitor").update_layout(template="plotly_dark", height=350), use_container_width=True)
 
 with tab5:
-    target = st.selectbox("Análisis Detallado:", ASSETS)
+    st.subheader("🌊 Vol-Monitor & Veredicto Maestro")
+    target = st.selectbox("Activo Detalle:", ASSETS, key="vol_target")
     vd = analyze_asset(target)
     if vd:
         dist_pips = (vd['price'] - vd['ema']) * 10000
         st.markdown('<div class="veredicto-box">', unsafe_allow_html=True)
-        st.write(f"### Veredicto: {target}")
-        if abs(vd['z']) > 1.6 and vd['hurst'] < 0.45:
-            st.error(f"⚠️ SEÑAL ACTIVA: {'VENTA' if vd['z'] > 0 else 'COMPRA'}")
-            if abs(dist_pips) < 15: st.markdown('<div class="alerta-ultra">🎯 RECHAZO EN EMA 21</div>', unsafe_allow_html=True)
-        else: st.info("Condición Neutral")
-        st.write(f"Distancia a la Media: {dist_pips:.1f} pips")
+        v_col1, v_col2 = st.columns(2)
+        with v_col1:
+            st.write(f"### Veredicto: {target}")
+            st.write(f"**Hurst:** {vd['hurst']:.2f} | **Z-Diff:** {vd['z']:.2f}")
+            st.write(f"**Distancia a EMA 21:** {dist_pips:.1f} pips")
+        with v_col2:
+            if abs(vd['z']) > 1.6 and vd['hurst'] < 0.45:
+                st.error(f"⚠️ SEÑAL ACTIVA: {'VENTA' if vd['z'] > 0 else 'COMPRA'}")
+                if abs(dist_pips) < 15: st.markdown('<div class="alerta-ultra">🎯 RECHAZO EN MEDIA</div>', unsafe_allow_html=True)
+            else: st.success("Condición Neutral")
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Gráfico Volatilidad
         df_v = vd['df'].copy()
         df_v['Vol_M'] = df_v['Ret'].rolling(20).std()
         df_v['Up_V'] = df_v['Vol_M'].rolling(20).mean() + (df_v['Vol_M'].rolling(20).std() * 2)
+        
         fig_vol = go.Figure()
         fig_vol.add_trace(go.Scatter(x=df_v.index, y=df_v['Vol_M'], name="Vol", line=dict(color='#00ffcc')))
         fig_vol.add_trace(go.Scatter(x=df_v.index, y=df_v['Up_V'], name="Pánico", line=dict(dash='dash', color='red')))
-        st.plotly_chart(fig_vol.update_layout(template="plotly_dark"), use_container_width=True)
+        st.plotly_chart(fig_vol.update_layout(template="plotly_dark", height=350), use_container_width=True)
+        
+        c_rmf1, c_rmf2 = st.columns(2)
+        with c_rmf1:
+            st.plotly_chart(px.area(df_v, y='RMF', title="Flujo RMF", color_discrete_sequence=['orange']).update_layout(template="plotly_dark", height=250), use_container_width=True)
+        with c_rmf2:
+            st.plotly_chart(px.histogram(df_v, x="Ret", nbins=50, title="Perfil Riesgo").update_layout(template="plotly_dark", height=250), use_container_width=True)
