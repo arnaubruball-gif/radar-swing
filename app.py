@@ -65,10 +65,38 @@ def analyze_asset(ticker):
         }
     except: return None
 
+@st.cache_data(ttl=3600)
+def fetch_risk_metrics():
+    tickers = {'VIX': '^VIX', 'DXY': 'DX-Y.NYB', 'GOLD': 'GC=F', 'SPX': '^GSPC'}
+    risk_data = {}
+    for name, t in tickers.items():
+        df = yf.download(t, period='60d', interval='1d', progress=False)
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        risk_data[name] = df
+    
+    # Cálculos de Riesgo
+    vix_val = risk_data['VIX']['Close'].iloc[-1]
+    ratio_gold_spx = risk_data['GOLD']['Close'] / risk_data['SPX']['Close']
+    dxy_mom = risk_data['DXY']['Close'].pct_change(10).iloc[-1] * 100
+    
+    # Puntuación de Riesgo (0-100)
+    score = 0
+    if vix_val > 20: score += 25
+    if vix_val > risk_data['VIX']['Close'].rolling(20).mean().iloc[-1]: score += 25
+    if dxy_mom > 0: score += 25
+    if ratio_gold_spx.iloc[-1] > ratio_gold_spx.rolling(20).mean().iloc[-1]: score += 25
+    
+    return vix_val, ratio_gold_spx, dxy_mom, score, risk_data['VIX']
+
 # --- 3. PANEL DE CONTROL ---
 st.title("🦅 Halcón de Guerra 4.0 | Full Market Intelligence")
 
-tab1, tab2, tab3 = st.tabs(["📊 Matriz ADN Completa", "🦅 Radar Fractal", "🎲 Montecarlo de Cruces"])
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📊 Matriz ADN Completa", 
+    "🦅 Radar Fractal", 
+    "🎲 Montecarlo de Cruces", 
+    "🛡️ Sentinel: Riesgo Global"
+])
 
 # --- LISTA EXPANDIDA DE ACTIVOS ---
 ASSETS = {
@@ -76,12 +104,10 @@ ASSETS = {
     'CROSSES': ['EURGBP=X', 'EURJPY=X', 'GBPJPY=X', 'EURAUD=X', 'GBPAUD=X', 'AUDJPY=X', 'CHFJPY=X'],
     'OTHERS': ['BTC-USD', 'ETH-USD', 'GC=F', 'SI=F', '^SPX', '^IXIC', '^FTSE']
 }
-
 all_tickers = ASSETS['MAJORS'] + ASSETS['CROSSES'] + ASSETS['OTHERS']
 
 with tab1:
     st.subheader("Ineficiencias en Pares Mayores, Cruces y Commodities")
-    
     if st.button('📡 ESCANEAR TODOS LOS MERCADOS'):
         results = []
         with st.spinner('Analizando liquidez y flujo...'):
@@ -93,24 +119,13 @@ with tab1:
                         if data['z'] > 1.6: v = "🚨 VENTA (Ficción)"
                         elif data['z'] < -1.6: v = "🟢 COMPRA (Oportunidad)"
                     elif data['r2'] > 0.30: v = "💎 TENDENCIA REAL"
-                    
-                    results.append([
-                        t.replace('=X',''), 
-                        f"{data['price']:.4f}", 
-                        round(data['r2'],3), 
-                        round(data['z'],2), 
-                        round(data['amihud'], 4),
-                        v
-                    ])
-        
+                    results.append([t.replace('=X',''), f"{data['price']:.4f}", round(data['r2'],3), round(data['z'],2), round(data['amihud'], 4), v])
         df_res = pd.DataFrame(results, columns=['Activo', 'Precio', 'R2', 'Z-Diff', 'Amihud', 'Veredicto'])
-        
         def style_v(val):
             if 'VENTA' in val: return 'background-color: #441111; color: #ff4b4b; font-weight: bold'
             if 'COMPRA' in val: return 'background-color: #114433; color: #00ffcc; font-weight: bold'
             if 'TENDENCIA' in val: return 'background-color: #112244; color: #1c83e1; font-weight: bold'
             return ''
-        
         st.dataframe(df_res.style.applymap(style_v, subset=['Veredicto']), use_container_width=True)
     else:
         st.info("Haz clic en el botón superior para cargar la matriz completa.")
@@ -122,16 +137,13 @@ with tab2:
         for t in all_tickers:
             d = analyze_asset(t)
             if d: h_data.append({'Activo': t.replace('=X',''), 'Hurst': d['hurst'], 'Z-Diff': d['z']})
-    
     if h_data:
         df_h = pd.DataFrame(h_data)
         fig_h = px.scatter(df_h, x="Z-Diff", y="Hurst", text="Activo", color="Hurst", 
                            color_continuous_scale="RdYlGn_r", range_x=[-4, 4], range_y=[0.3, 0.7])
-        fig_h.add_hline(y=0.5, line_dash="dash", line_color="white", annotation_text="Eficiencia (Random Walk)")
+        fig_h.add_hline(y=0.5, line_dash="dash", line_color="white")
         fig_h.update_layout(template="plotly_dark", height=500)
         st.plotly_chart(fig_h, use_container_width=True)
-        
-        
 
 with tab3:
     st.subheader("Simulación Direccional (Especial para Cruces)")
@@ -139,44 +151,54 @@ with tab3:
     with c1:
         cross_ticker = st.text_input("Introduce el Cruce (ej: EURGBP=X, CADJPY=X):", "EURGBP=X")
         sim_days = st.slider("Días de proyección", 5, 20, 10)
-        
     cross_data = analyze_asset(cross_ticker)
-    
     if cross_data:
-        mu = cross_data['drift'] 
-        sigma = cross_data['vol']
-        last_p = cross_data['price']
-        
-        sims = 250
-        paths = np.zeros((sim_days + 1, sims))
-        paths[0] = last_p
-        
+        paths = np.zeros((sim_days + 1, 250))
+        paths[0] = cross_data['price']
         for t in range(1, sim_days + 1):
-            # Modelo Direccional Sensible
-            paths[t] = paths[t-1] * (1 + np.random.normal(mu, sigma, sims))
-        
+            paths[t] = paths[t-1] * (1 + np.random.normal(cross_data['drift'], cross_data['vol'], 250))
         p10, p50, p90 = np.percentile(paths, 10, axis=1), np.percentile(paths, 50, axis=1), np.percentile(paths, 90, axis=1)
-        
         with c2:
             fig_mc = go.Figure()
-            fig_mc.add_trace(go.Scatter(x=list(range(sim_days+1))+list(range(sim_days+1))[::-1], y=list(p90)+list(p10[::-1]), 
-                                        fill='toself', fillcolor='rgba(0,255,150,0.1)', line=dict(color='rgba(255,255,255,0)'), name="Rango Probable"))
+            fig_mc.add_trace(go.Scatter(x=list(range(sim_days+1))+list(range(sim_days+1))[::-1], y=list(p90)+list(p10[::-1]), fill='toself', fillcolor='rgba(0,255,150,0.1)', line=dict(color='rgba(255,255,255,0)'), name="Rango Probable"))
             fig_mc.add_trace(go.Scatter(x=list(range(sim_days+1)), y=p50, line=dict(color='#00ffcc', width=4), name="Inercia (Drift)"))
-            fig_mc.update_layout(template="plotly_dark", height=500, title=f"Proyección de {cross_ticker}")
+            fig_mc.update_layout(template="plotly_dark", height=500)
             st.plotly_chart(fig_mc, use_container_width=True)
-            
-            
-        
         m1, m2, m3 = st.columns(3)
-        m1.metric("Drift (7d)", f"{mu*100:.4f}%")
+        m1.metric("Drift (7d)", f"{cross_data['drift']*100:.4f}%")
         m2.metric("Z-Diff", round(cross_data['z'], 2))
         m3.metric("Hurst", round(cross_data['hurst'], 2))
-    else:
-        st.error("Introduce un ticker válido.")
+
+with tab4:
+    st.subheader("🛡️ Sentinel: Análisis de Riesgo y Sentimiento")
+    vix_v, g_spx, dxy_m, r_score, vix_df = fetch_risk_metrics()
+    
+    k1, k2, k3 = st.columns(3)
+    clima = "🔴 PÁNICO" if r_score >= 75 else ("🟡 CAUTELA" if r_score >= 50 else "🟢 CALMA")
+    k1.metric("RIESGO GLOBAL", f"{r_score}%", clima)
+    k2.metric("VIX (Miedo)", f"{vix_v:.2f}", f"{vix_v - vix_df['Close'].iloc[-2]:.2f}", delta_color="inverse")
+    k3.metric("MOMENTUM DXY (10d)", f"{dxy_m:.2f}%", delta_color="inverse")
+
+    st.divider()
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.write("**Histórico VIX (Volatilidad)**")
+        fig_v = px.area(vix_df, y='Close', color_discrete_sequence=['orange'])
+        fig_v.update_layout(template="plotly_dark", height=300, showlegend=False)
+        st.plotly_chart(fig_v, use_container_width=True)
+        
+    with col_right:
+        st.write("**Ratio Refugio: ORO / S&P 500**")
+        fig_r = px.line(g_spx, color_discrete_sequence=['gold'])
+        fig_r.update_layout(template="plotly_dark", height=300, showlegend=False)
+        st.plotly_chart(fig_r, use_container_width=True)
+    
+    st.info("💡 **Tip del Halcón:** Un Riesgo Global > 50% sugiere reducir el tamaño de posición en pares cruzados, ya que la correlación con el USD tiende a absorberlo todo.")
 
 st.sidebar.markdown("""
 ### 🧠 Guía de Operación
 1. **Filtro Matriz**: Busca activos en **VENTA** o **COMPRA** donde el R2 sea muy bajo (<0.10).
 2. **Confirmación Fractal**: Si el Z-Diff es extremo, verifica en el Radar que el **Hurst sea < 0.50**. Esto confirma que el precio tiende a volver.
-3. **Cruces**: Usa la simulación para ver si la inercia (Drift) está a tu favor o en contra.
+3. **Sentimiento**: Revisa el Dashboard **Sentinel** para asegurar que el mercado no está en fase de pánico total.
 """)
