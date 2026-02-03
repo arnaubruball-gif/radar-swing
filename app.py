@@ -8,7 +8,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 
 # --- 1. CONFIGURACIÓN DE ÉLITE ---
-st.set_page_config(page_title="Halcón 4.0 - Full Market Terminal", layout="wide")
+st.set_page_config(page_title="Argos - Full Market Terminal", layout="wide")
 
 st.markdown("""
     <style>
