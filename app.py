@@ -63,7 +63,6 @@ def analyze_asset(ticker):
 
 @st.cache_data(ttl=3600)
 def fetch_risk_metrics():
-    # Incluimos DXY y SPX para el Radar de Riesgo
     tickers = {'VIX': '^VIX', 'DXY': 'DX-Y.NYB', 'GOLD': 'GC=F', 'SPX': '^GSPC'}
     risk_data = {}
     for name, t in tickers.items():
@@ -191,4 +190,9 @@ with tab5:
         with c_rmf1:
             st.plotly_chart(px.area(df_v, y='RMF', title="Flujo RMF", color_discrete_sequence=['orange']).update_layout(template="plotly_dark", height=250), use_container_width=True)
         with c_rmf2:
-            st.plotly_chart(px.histogram(df_v, x="Ret", nbins=50, title="Perfil Riesgo").update_layout(template="plotly_dark", height=250), use_container_width=True)
+            # MARCADOR DE POSICIÓN ACTUAL EN EL HISTOGRAMA
+            current_ret = df_v['Ret'].iloc[-1]
+            fig_hist = px.histogram(df_v, x="Ret", nbins=50, title="Perfil Riesgo (Rojo = Hoy)", color_discrete_sequence=['#444'])
+            fig_hist.add_vline(x=current_ret, line_width=3, line_dash="dash", line_color="#ff4b4b")
+            fig_hist.update_layout(template="plotly_dark", height=250)
+            st.plotly_chart(fig_hist, use_container_width=True)
