@@ -6,16 +6,15 @@ import statsmodels.api as sm
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
-from scipy.stats import norm
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="ARGOS v5.5 - Institutional Suite", layout="wide")
+st.set_page_config(page_title="ARGOS v5.6 - Institutional Suite", layout="wide")
 
 st.markdown("""
     <style>
     .main { background-color: #000000; }
     .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #3d4463; }
-    .tp-card { background-color: #161b22; padding: 20px; border-radius: 10px; border-top: 4px solid #00ffcc; text-align: center; }
+    .tp-card { background-color: #161b22; padding: 20px; border-radius: 10px; border-top: 4px solid #00ffcc; text-align: center; margin-bottom:10px; }
     .sl-card { background-color: #161b22; padding: 20px; border-radius: 10px; border-top: 4px solid #ff4b4b; text-align: center; }
     .bank-card { background-color: #0e1117; padding: 15px; border-left: 5px solid #ffd700; border-radius: 5px; margin-bottom: 10px; }
     </style>
@@ -45,7 +44,7 @@ def analyze_asset(ticker):
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         vol_30d = df['Ret'].tail(30).std()
         
-        return {'df': df, 'price': float(df['Close'].iloc[-1]), 'z': z_val, 'hurst': hurst, 'ema': ema_21, 'vol': vol_30d}
+        return {'df': df, 'price': float(df['Close'].iloc[-1]), 'z': z_val, 'hurst': hurst, 'ema': float(ema_21), 'vol': vol_30d}
     except: return None
 
 # --- LISTA DE ACTIVOS ---
@@ -65,49 +64,58 @@ with tab1:
         st.dataframe(pd.DataFrame(results, columns=['Activo', 'Precio', 'Z', 'H', 'Status']), use_container_width=True)
 
 with tab2:
-    st.subheader("🎯 Objetivos Matemáticos de Salida")
+    st.subheader("🎯 Gestión de Riesgo y Objetivos")
+    col_acc1, col_acc2 = st.columns(2)
+    with col_acc1:
+        balance = st.number_input("Balance de cuenta ($)", value=10000)
+    with col_acc2:
+        riesgo_pct = st.slider("Riesgo por operación (%)", 0.5, 5.0, 1.0)
+    
     tk_ex = st.selectbox("Activo para Ejecución:", ASSETS, key="exec_box")
     d_ex = analyze_asset(tk_ex)
     
     if d_ex:
-        p = d_ex['price']
-        v = d_ex['vol']
-        # Volatilidad semanal aproximada (vol diaria * sqrt(5))
-        v_w = v * np.sqrt(5)
+        p, v, z = d_ex['price'], d_ex['vol'], d_ex['z']
+        sl_dist = v * 1.5
+        sl_precio = p * (1 + sl_dist) if z > 0 else p * (1 - sl_dist)
         
+        # Calculo de Lote (Simplificado para Forex)
+        riesgo_usd = balance * (riesgo_pct / 100)
+        pips_to_sl = abs(p - sl_precio) * 10000
+        lote_sugerido = riesgo_usd / (pips_to_sl * 10) if pips_to_sl > 0 else 0
+        
+        st.divider()
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("### 📅 Niveles Diarios (Intradía)")
-            st.markdown(f'<div class="tp-card">TP Diario (1σ): {p*(1+v):.5f} <br> <small>Prob: 32%</small></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="tp-card" style="border-top-color:#ffd700">Fair Value (EMA): {d_ex["ema"]:.5f} <br> <small>Prob: 68%</small></div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="sl-card">SL Técnico: {p*(1-v*1.5):.5f}</div>', unsafe_allow_html=True)
+            st.markdown("### 📅 Objetivos Diarios")
+            st.markdown(f'<div class="tp-card">Fair Value (EMA 21): {d_ex["ema"]:.5f}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="sl-card">Stop Loss Sugerido: {sl_precio:.5f}</div>', unsafe_allow_html=True)
+            st.info(f"Lote Sugerido: {lote_sugerido:.2f} lotes")
             
         with c2:
-            st.markdown("### 🗓️ Niveles Semanales (Swing)")
-            st.markdown(f'<div class="tp-card">TP Semanal (1σ): {p*(1+v_w):.5f}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="tp-card" style="border-top-color:#ffd700">TP Extremo (2σ): {p*(1+v_w*2):.5f}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="sl-card">SL Semanal: {p*(1-v_w*1.2):.5f}</div>', unsafe_allow_html=True)
+            st.markdown("### 🗓️ Objetivos Semanales")
+            v_w = v * np.sqrt(5)
+            st.markdown(f'<div class="tp-card">Target Semanal (1σ): {p*(1+v_w if z < 0 else 1-v_w):.5f}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="tp-card" style="border-top-color:#ffd700">Target Extremo (2σ): {p*(1+v_w*2 if z < 0 else 1-v_w*2):.5f}</div>', unsafe_allow_html=True)
 
 with tab4:
     st.subheader("🛡️ Sentinel Macro")
-    # Fetch simplificado para velocidad
-    vix = yf.download('^VIX', period='1d', progress=False)['Close'].iloc[-1]
-    dxy = yf.download('DX-Y.NYB', period='1d', progress=False)['Close'].iloc[-1]
-    st.columns(2)[0].metric("VIX", f"{vix:.2f}")
-    st.columns(2)[1].metric("DXY", f"{dxy:.2f}")
-
-with tab5:
-    target_v = st.selectbox("Detalle Volatilidad:", ASSETS, key="v_box")
-    vd = analyze_asset(target_v)
-    if vd:
-        fig_h = px.histogram(vd['df'], x="Ret", nbins=50, title="Perfil de Riesgo (Roja = Hoy)")
-        fig_h.add_vline(x=vd['df']['Ret'].iloc[-1], line_color="red", line_width=3)
-        st.plotly_chart(fig_h.update_layout(template="plotly_dark"), use_container_width=True)
+    try:
+        vix_df = yf.download('^VIX', period='1d', progress=False)
+        dxy_df = yf.download('DX-Y.NYB', period='1d', progress=False)
+        # Extraemos el valor float puro para evitar el TypeError
+        vix_val = float(vix_df['Close'].iloc[-1])
+        dxy_val = float(dxy_df['Close'].iloc[-1])
+        
+        sc1, sc2 = st.columns(2)
+        sc1.metric("VIX (Miedo)", f"{vix_val:.2f}")
+        sc2.metric("DXY (Dólar)", f"{dxy_val:.2f}")
+    except:
+        st.error("Error cargando datos macro. Reintenta en unos segundos.")
 
 with tab6:
     st.subheader("🏦 Banks Detector & Yield Spreads")
     b_col1, b_col2 = st.columns([2, 1])
-    
     with b_col1:
         target_b = st.selectbox("Huella Institucional:", ASSETS, key="b_box")
         bd = analyze_asset(target_b)
@@ -115,11 +123,8 @@ with tab6:
             df_b = bd['df'].copy()
             df_b['Anomaly'] = bd['df']['RMF'].abs() / bd['df']['RMF'].abs().rolling(20).mean()
             clrs = ['#ffd700' if x > 2.5 else '#3d4463' for x in df_b['Anomaly']]
-            st.plotly_chart(go.Figure(data=[go.Bar(x=df_b.index, y=bd['df']['RMF'].abs(), marker_color=clrs)]).update_layout(template="plotly_dark", title="Shadow RMF (Barras Doradas = Bancos)"), use_container_width=True)
-            
+            st.plotly_chart(go.Figure(data=[go.Bar(x=df_b.index, y=bd['df']['RMF'].abs(), marker_color=clrs)]).update_layout(template="plotly_dark"), use_container_width=True)
     with b_col2:
         st.markdown("### 📊 Yield Spreads (10Y)")
-        # Simulación de spread real: Gilt/Bund vs US10Y
-        st.markdown('<div class="bank-card"><b>GBP/USD Spread</b><br>Gilt vs US10Y: <span style="color:#00ffcc">+0.48%</span></div>', unsafe_allow_html=True)
-        st.markdown('<div class="bank-card"><b>CAD/USD Spread</b><br>CAN vs US10Y: <span style="color:#ff4b4b">-0.21%</span></div>', unsafe_allow_html=True)
-        st.info("Diferenciales de bonos a 10 años actualizados.")
+        st.markdown('<div class="bank-card"><b>GBP/USD Spread</b>: <span style="color:#00ffcc">+0.48%</span></div>', unsafe_allow_html=True)
+        st.markdown('<div class="bank-card"><b>CAD/USD Spread</b>: <span style="color:#ff4b4b">-0.21%</span></div>', unsafe_allow_html=True)
