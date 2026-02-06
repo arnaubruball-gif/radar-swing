@@ -7,8 +7,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 
-# --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="ARGOS v6.5 - Final Stable", layout="wide")
+# --- 1. CONFIGURACIÓN (Sin cambios) ---
+st.set_page_config(page_title="ARGOS v6.6 - Montecarlo Re-Linked", layout="wide")
 
 st.markdown("""
     <style>
@@ -21,7 +21,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MOTOR DE CÁLCULO ---
+# --- 2. MOTOR DE CÁLCULO (Sin cambios) ---
 def calcular_hurst(ts):
     if len(ts) < 30: return 0.5
     lags = range(2, 20)
@@ -52,7 +52,7 @@ def analyze_asset(ticker):
         return {'df': df, 'price': float(df['Close'].iloc[-1]), 'z': z_val, 'r2': df['R2_Dynamic'].iloc[-1], 'hurst': hurst, 'ema': float(ema_21), 'vol': df['Ret'].tail(30).std()}
     except: return None
 
-# --- 3. LISTA DE ACTIVOS ---
+# --- 3. LISTA DE ACTIVOS (Sin cambios) ---
 ASSETS = ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDJPY=X', 'GC=F', 'BTC-USD', '^GSPC']
 
 # --- 4. PESTAÑAS ---
@@ -89,19 +89,38 @@ with tab2:
             st.markdown(f'<div class="tp-card">TP Semanal Prime (1.2σ): {tp_w1:.5f}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="tp-card" style="border-top-color:#ffd700">TP Semanal Extremo (2σ): {tp_w2:.5f}</div>', unsafe_allow_html=True)
 
+# --- RE-MODIFICACIÓN QUIRÚRGICA TAB 3: MONTECARLO ---
 with tab3:
-    st.subheader("🎲 Montecarlo")
-    target_m = st.selectbox("Simular:", ASSETS, key="mc_s")
+    st.subheader("🎲 Simulación Montecarlo vs Señal ADN")
+    target_m = st.selectbox("Analizar Probabilidades:", ASSETS, key="mc_s")
     dm = analyze_asset(target_m)
     if dm:
         sims, dias = 1000, 15
         rets = np.random.normal(dm['df']['Ret'].mean(), dm['vol'], (sims, dias))
         caminos = dm['price'] * (1 + rets).cumprod(axis=1)
+        
+        # Gráfico
         fig_m = go.Figure()
         for i in range(15): fig_m.add_trace(go.Scatter(y=caminos[i], line=dict(width=1), opacity=0.3, showlegend=False))
         fig_m.add_trace(go.Scatter(y=np.percentile(caminos, 50, axis=0), line=dict(color='#00ffcc', width=4), name="Mediana"))
         st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400), use_container_width=True)
+        
+        # Probabilidad de Éxito Conectada a la Señal ADN
+        z_score = dm['z']
+        if z_score > 1.6: # Es una señal de VENTA
+            prob_exito = (caminos[:, -1] < dm['price']).sum() / sims * 100
+            label_tipo = "BAJISTA (Venta)"
+        elif z_score < -1.6: # Es una señal de COMPRA
+            prob_exito = (caminos[:, -1] > dm['price']).sum() / sims * 100
+            label_tipo = "ALCISTA (Compra)"
+        else: # Neutral
+            prob_exito = 50.0
+            label_tipo = "NEUTRAL"
+            
+        st.metric(f"Probabilidad de éxito de la señal {label_tipo}", f"{prob_exito:.1f}%")
+        st.caption("Esta probabilidad mide cuántas trayectorias terminan a favor de la ineficiencia detectada en el ADN.")
 
+# --- PESTAÑAS 4, 5 Y 6 (Sin cambios) ---
 with tab4:
     st.subheader("🛡️ Sentinel Macro")
     def get_safe_data(ticker):
@@ -109,24 +128,19 @@ with tab4:
             d = yf.download(ticker, period='30d', progress=False)['Close'].ffill()
             return d.iloc[:, 0] if isinstance(d, pd.DataFrame) else d
         except: return pd.Series()
-    
     sp_df, vix_df, dxy_df = get_safe_data('^GSPC'), get_safe_data('^VIX'), get_safe_data('DX-Y.NYB')
     if not sp_df.empty and not vix_df.empty:
         m1, m2, m3 = st.columns(3)
-        sp_l, vix_l, dxy_l = sp_df.iloc[-1], vix_df.iloc[-1], dxy_df.iloc[-1]
-        m1.metric("S&P 500", f"{sp_l:.2f}")
-        m2.metric("VIX Index", f"{vix_l:.2f}")
-        m3.metric("DXY Index", f"{dxy_l:.2f}")
-        
+        m1.metric("S&P 500", f"{sp_df.iloc[-1]:.2f}")
+        m2.metric("VIX Index", f"{vix_df.iloc[-1]:.2f}")
+        m3.metric("DXY Index", f"{dxy_df.iloc[-1]:.2f}")
         fig_s = go.Figure()
         fig_s.add_trace(go.Scatter(x=sp_df.index, y=sp_df, name="S&P 500", yaxis="y1", line=dict(color='#00ffcc')))
         fig_s.add_trace(go.Scatter(x=vix_df.index, y=vix_df, name="VIX", yaxis="y2", line=dict(color='#ff4b4b', dash='dot')))
         fig_s.update_layout(template="plotly_dark", yaxis=dict(side="left"), yaxis2=dict(overlaying="y", side="right"), height=400)
         st.plotly_chart(fig_s, use_container_width=True)
-        
-        score = sum([vix_l > 20, dxy_l > 104.5, sp_df.pct_change(5).iloc[-1] < -0.02])
-        lbls = ["ESTABLE", "PRECAUCIÓN", "RIESGO", "PÁNICO"]
-        clrs = ["#00ffcc", "#ffd700", "#ff8c00", "#ff4b4b"]
+        score = sum([vix_df.iloc[-1] > 20, dxy_df.iloc[-1] > 104.5, sp_df.pct_change(5).iloc[-1] < -0.02])
+        clrs = ["#00ffcc", "#ffd700", "#ff8c00", "#ff4b4b"]; lbls = ["ESTABLE", "PRECAUCIÓN", "RIESGO", "PÁNICO"]
         st.markdown(f'<div class="risk-banner" style="background-color:{clrs[min(score, 3)]};">ESTADO MACRO: {lbls[min(score, 3)]}</div>', unsafe_allow_html=True)
 
 with tab5:
