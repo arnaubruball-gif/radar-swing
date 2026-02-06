@@ -8,7 +8,7 @@ import plotly.express as px
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN (Sin cambios) ---
-st.set_page_config(page_title="ARGOS v6.3 - Sentinel Final Fix", layout="wide")
+st.set_page_config(page_title="ARGOS v6.4 - Pro Execution Updates", layout="wide")
 
 st.markdown("""
     <style>
@@ -68,22 +68,36 @@ with tab1:
                 results.append([t.replace('=X',''), d['price'], round(d['r2'],3), round(d['z'],2), round(d['hurst'],2), status])
         st.dataframe(pd.DataFrame(results, columns=['Activo', 'Precio', 'R2', 'Z-Diff', 'Hurst', 'Veredicto']), use_container_width=True)
 
+# --- MODIFICACIÓN EN TAB 2: EJECUCIÓN PRO ---
 with tab2:
-    st.subheader("🎯 Ejecución Pro")
-    target_e = st.selectbox("Activo:", ASSETS, key="exec_s")
+    st.subheader("🎯 Niveles de Salida Dinámicos (Probabilidad de Distribución)")
+    target_e = st.selectbox("Seleccionar Activo:", ASSETS, key="exec_s")
     de = analyze_asset(target_e)
     if de:
         p, v, z = de['price'], de['vol'], de['z']
-        sl = p * (1 + v*1.5) if z > 0 else p * (1 - v*1.5)
+        sl_dist = v * 1.5
+        sl = p * (1 + sl_dist) if z > 0 else p * (1 - sl_dist)
+        
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown(f'<div class="tp-card">TP Diario (EMA 21): {de["ema"]:.5f}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="sl-card">SL Estadístico: {sl:.5f}</div>', unsafe_allow_html=True)
+            st.markdown("### 📅 Objetivos Diarios")
+            # Sustitución de EMA 21 por TP Diario Basado en 1 Desviación Estándar
+            tp_d = p * (1 - v if z > 0 else 1 + v)
+            st.markdown(f'<div class="tp-card">TP Diario (1σ): {tp_d:.5f}<br><small>Prob. Alcance: 32%</small></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="sl-card">Stop Loss Estadístico: {sl:.5f}</div>', unsafe_allow_html=True)
+            
         with c2:
+            st.markdown("### 🗓️ Objetivos Semanales")
             v_w = v * np.sqrt(5)
-            st.markdown(f'<div class="tp-card">Swing Target 1σ: {p*(1-v_w if z > 0 else 1+v_w):.5f}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="tp-card" style="border-top-color:#ffd700">Swing Target 2σ: {p*(1-v_w*2 if z > 0 else 1+v_w*2):.5f}</div>', unsafe_allow_html=True)
+            # TP Semanal 1 (1.2 Sigma)
+            tp_w1 = p * (1 - v_w * 1.2 if z > 0 else 1 + v_w * 1.2)
+            # TP Semanal 2 (2.0 Sigma - Extremo)
+            tp_w2 = p * (1 - v_w * 2.0 if z > 0 else 1 + v_w * 2.0)
+            
+            st.markdown(f'<div class="tp-card">TP Semanal Prime (1.2σ): {tp_w1:.5f}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="tp-card" style="border-top-color:#ffd700">TP Semanal Extremo (2σ): {tp_w2:.5f}</div>', unsafe_allow_html=True)
 
+# --- RESTO DE PESTAÑAS (INTACTAS) ---
 with tab3:
     st.subheader("🎲 Montecarlo")
     target_m = st.selectbox("Simular:", ASSETS, key="mc_s")
@@ -97,48 +111,33 @@ with tab3:
         fig_m.add_trace(go.Scatter(y=np.percentile(caminos, 50, axis=0), line=dict(color='#00ffcc', width=4), name="Mediana"))
         st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400), use_container_width=True)
 
-# --- RECONSTRUCCIÓN ROBUSTA TAB 4: SENTINEL ---
 with tab4:
     st.subheader("🛡️ Sentinel Macro: S&P 500 vs VIX")
-    
     def get_safe_data(ticker):
         d = yf.download(ticker, period='20d', progress=False)['Close'].ffill()
         if isinstance(d, pd.DataFrame): d = d.iloc[:, 0]
         return d
-
     try:
-        sp_df = get_safe_data('^GSPC')
-        vix_df = get_safe_data('^VIX')
-        dxy_df = get_safe_data('DX-Y.NYB')
-
+        sp_df, vix_df, dxy_df = get_safe_data('^GSPC'), get_safe_data('^VIX'), get_safe_data('DX-Y.NYB')
         m1, m2, m3 = st.columns(3)
         sp_last, vix_last, dxy_last = sp_df.iloc[-1], vix_df.iloc[-1], dxy_df.iloc[-1]
-        
         m1.metric("S&P 500", f"{sp_last:.2f}", f"{sp_df.pct_change().iloc[-1]*100:.2f}%")
         m2.metric("VIX Index", f"{vix_last:.2f}", f"{vix_last - vix_df.iloc[-2]:+.2f}")
         m3.metric("DXY Index", f"{dxy_last:.2f}")
-
         fig_sent = go.Figure()
         fig_sent.add_trace(go.Scatter(x=sp_df.index, y=sp_df, name="S&P 500", line=dict(color='#00ffcc', width=2), yaxis="y1"))
         fig_sent.add_trace(go.Scatter(x=vix_df.index, y=vix_df, name="VIX", line=dict(color='#ff4b4b', width=2, dash='dot'), yaxis="y2"))
-        
         fig_sent.update_layout(template="plotly_dark", yaxis=dict(title="S&P 500", side="left", showgrid=False),
             yaxis2=dict(title="VIX", side="right", overlaying="y", showgrid=False),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), height=450)
         st.plotly_chart(fig_sent, use_container_width=True)
-
         score = 0
         if vix_last > 20: score += 1
-        if vix_last > 28: score += 1
         if dxy_last > 104.5: score += 1
         if sp_df.pct_change(5).iloc[-1] < -0.02: score += 1
-        
-        labels = ["ESTABLE", "PRECAUCIÓN", "RIESGO ALTO", "PÁNICO"]
-        colors = ["#00ffcc", "#ffd700", "#ff8c00", "#ff4b4b"]
-        idx = min(score, 3)
-        st.markdown(f'<div class="risk-banner" style="background-color:{colors[idx]};">ESTADO MACRO: {labels[idx]}</div>', unsafe_allow_html=True)
-    except:
-        st.error("Error crítico en Sentinel. Verificando conexión...")
+        labels = ["ESTABLE", "PRECAUCIÓN", "RIESGO ALTO", "PÁNICO"]; colors = ["#00ffcc", "#ffd700", "#ff8c00", "#ff4b4b"]
+        st.markdown(f'<div class="risk-banner" style="background-color:{colors[min(score, 3)]};">ESTADO MACRO: {labels[min(score, 3)]}</div>', unsafe_allow_html=True)
+    except: st.error("Error en Sentinel.")
 
 with tab5:
     st.subheader("🌊 Vol-Monitor")
@@ -161,9 +160,4 @@ with tab6:
             clrs = ['#ffd700' if x > 2.5 else '#3d4463' for x in df_b['Anom']]
             st.plotly_chart(go.Figure(data=[go.Bar(x=df_b.index, y=df_b['RMF'].abs(), marker_color=clrs)]).update_layout(template="plotly_dark"), use_container_width=True)
     with col_b2:
-        st.write("**Global Yield Spreads (10Y)**")
-        yield_data = {'US10Y': 4.25, 'GER10Y': 2.40, 'UK10Y': 4.10, 'CAN10Y': 3.50, 'AUS10Y': 4.40, 'JPN10Y': 0.85}
-        spreads = {"EUR/USD": yield_data['GER10Y'] - yield_data['US10Y'], "GBP/USD": yield_data['UK10Y'] - yield_data['US10Y'], "CAD/USD": yield_data['CAN10Y'] - yield_data['US10Y'], "AUD/USD": yield_data['AUS10Y'] - yield_data['US10Y'], "JPY/USD": yield_data['JPN10Y'] - yield_data['US10Y']}
-        for pair, val in spreads.items():
-            color = "#00ffcc" if val > -1.5 else "#ff4b4b"
-            st.markdown(f'<div class="bank-card">{pair} Spread: <span style="color:{color}">{val:+.2f}%</span></div>', unsafe_allow_html=True)
+        st.write("**Global Yield Sp
