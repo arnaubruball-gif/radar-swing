@@ -7,8 +7,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 
-# --- 1. CONFIGURACIÓN (Mantenida) ---
-st.set_page_config(page_title="ARGOS v6.1 - Sentinel Enhanced", layout="wide")
+# --- 1. CONFIGURACIÓN (Sin cambios) ---
+st.set_page_config(page_title="ARGOS v6.2 - Sentinel Fix", layout="wide")
 
 st.markdown("""
     <style>
@@ -21,7 +21,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MOTOR DE CÁLCULO (Mantenido intacto) ---
+# --- 2. MOTOR DE CÁLCULO (Sin cambios) ---
 def calcular_hurst(ts):
     if len(ts) < 30: return 0.5
     lags = range(2, 20)
@@ -52,13 +52,12 @@ def analyze_asset(ticker):
         return {'df': df, 'price': float(df['Close'].iloc[-1]), 'z': z_val, 'r2': df['R2_Dynamic'].iloc[-1], 'hurst': hurst, 'ema': float(ema_21), 'vol': df['Ret'].tail(30).std()}
     except: return None
 
-# --- 3. LISTA DE ACTIVOS (Mantenida) ---
+# --- 3. LISTA DE ACTIVOS (Sin cambios) ---
 ASSETS = ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDJPY=X', 'GC=F', 'BTC-USD', '^GSPC']
 
 # --- 4. PESTAÑAS ---
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 ADN", "🎯 Ejecución Pro", "🎲 Montecarlo", "🛡️ Sentinel", "🌊 Vol-Monitor", "🏦 Banks Detector"])
 
-# Pestañas 1, 2, 3, 5 y 6 se mantienen igual que en v6.0
 with tab1:
     if st.button('📡 ESCANEO ADN'):
         results = []
@@ -98,55 +97,47 @@ with tab3:
         fig_m.add_trace(go.Scatter(y=np.percentile(caminos, 50, axis=0), line=dict(color='#00ffcc', width=4), name="Mediana"))
         st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400), use_container_width=True)
 
-# --- REPARACIÓN DE TAB 4: SENTINEL ---
+# --- CORRECCIÓN FINAL TAB 4: SENTINEL (SIN NaN) ---
 with tab4:
     st.subheader("🛡️ Sentinel Macro: S&P 500 vs VIX")
     try:
-        # Descarga de datos
-        s_data = yf.download(['^GSPC', '^VIX', 'DX-Y.NYB'], period='60d', progress=False)['Close']
-        sp = s_data['^GSPC']
-        vix = s_data['^VIX']
-        dxy = s_data['DX-Y.NYB']
+        # Descarga individual para evitar problemas de alineación
+        sp_df = yf.download('^GSPC', period='60d', progress=False)['Close'].ffill()
+        vix_df = yf.download('^VIX', period='60d', progress=False)['Close'].ffill()
+        dxy_df = yf.download('DX-Y.NYB', period='60d', progress=False)['Close'].ffill()
 
-        # Métricas principales
         m1, m2, m3 = st.columns(3)
-        m1.metric("S&P 500", f"{sp.iloc[-1]:.2f}", f"{sp.pct_change().iloc[-1]*100:.2f}%")
-        m2.metric("VIX Index", f"{vix.iloc[-1]:.2f}", f"{vix.iloc[-1]-vix.iloc[-2]:+.2f}")
-        m3.metric("DXY Index", f"{dxy.iloc[-1]:.2f}")
-
-        # Gráfico S&P 500 vs VIX (Doble Eje)
-        fig_sent = go.Figure()
-        fig_sent.add_trace(go.Scatter(x=sp.index, y=sp, name="S&P 500", line=dict(color='#00ffcc', width=2), yaxis="y1"))
-        fig_sent.add_trace(go.Scatter(x=vix.index, y=vix, name="VIX (Miedo)", line=dict(color='#ff4b4b', width=2, dash='dot'), yaxis="y2"))
+        sp_last = sp_df.iloc[-1]
+        vix_last = vix_df.iloc[-1]
+        dxy_last = dxy_df.iloc[-1]
         
-        fig_sent.update_layout(
-            template="plotly_dark",
-            yaxis=dict(title="Precio S&P 500", side="left", showgrid=False),
+        m1.metric("S&P 500", f"{sp_last:.2f}", f"{sp_df.pct_change().iloc[-1]*100:.2f}%")
+        m2.metric("VIX Index", f"{vix_last:.2f}", f"{vix_last - vix_df.iloc[-2]:+.2f}")
+        m3.metric("DXY Index", f"{dxy_last:.2f}")
+
+        fig_sent = go.Figure()
+        fig_sent.add_trace(go.Scatter(x=sp_df.index, y=sp_df, name="S&P 500", line=dict(color='#00ffcc', width=2), yaxis="y1"))
+        fig_sent.add_trace(go.Scatter(x=vix_df.index, y=vix_df, name="VIX (Miedo)", line=dict(color='#ff4b4b', width=2, dash='dot'), yaxis="y2"))
+        
+        fig_sent.update_layout(template="plotly_dark", yaxis=dict(title="Precio S&P 500", side="left", showgrid=False),
             yaxis2=dict(title="Nivel VIX", side="right", overlaying="y", showgrid=False),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            height=450
-        )
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), height=450)
         st.plotly_chart(fig_sent, use_container_width=True)
 
-        # Semáforo de Riesgo Lógica
-        vix_val = vix.iloc[-1]
-        dxy_val = dxy.iloc[-1]
-        sp_ret_5d = sp.pct_change(5).iloc[-1]
-        
+        # Lógica Semáforo
         score = 0
-        if vix_val > 20: score += 1
-        if vix_val > 28: score += 1
-        if dxy_val > 104.5: score += 1
-        if sp_ret_5d < -0.02: score += 1
+        if vix_last > 20: score += 1
+        if vix_last > 28: score += 1
+        if dxy_last > 104.5: score += 1
+        if sp_df.pct_change(5).iloc[-1] < -0.02: score += 1
         
-        labels = ["RISK-ON: Mercado Estable", "PRECAUCIÓN: Ruido detectado", "RIESGO ALTO: Salida de capital", "PÁNICO: Risk-Off Extremo"]
+        labels = ["ESTABLE", "PRECAUCIÓN", "RIESGO ALTO", "PÁNICO"]
         colors = ["#00ffcc", "#ffd700", "#ff8c00", "#ff4b4b"]
         idx = min(score, 3)
-        
         st.markdown(f'<div class="risk-banner" style="background-color:{colors[idx]};">ESTADO MACRO: {labels[idx]}</div>', unsafe_allow_html=True)
         
     except Exception as e:
-        st.error(f"Error cargando Sentinel: {e}")
+        st.error("Error en Sentinel: El mercado podría estar enviando datos incompletos.")
 
 with tab5:
     st.subheader("🌊 Vol-Monitor")
