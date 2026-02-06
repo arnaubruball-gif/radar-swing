@@ -8,7 +8,7 @@ import plotly.express as px
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN (Sin cambios) ---
-st.set_page_config(page_title="ARGOS v6.2 - Sentinel Fix", layout="wide")
+st.set_page_config(page_title="ARGOS v6.3 - Sentinel Final Fix", layout="wide")
 
 st.markdown("""
     <style>
@@ -97,19 +97,22 @@ with tab3:
         fig_m.add_trace(go.Scatter(y=np.percentile(caminos, 50, axis=0), line=dict(color='#00ffcc', width=4), name="Mediana"))
         st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400), use_container_width=True)
 
-# --- CORRECCIÓN FINAL TAB 4: SENTINEL (SIN NaN) ---
+# --- RECONSTRUCCIÓN ROBUSTA TAB 4: SENTINEL ---
 with tab4:
     st.subheader("🛡️ Sentinel Macro: S&P 500 vs VIX")
+    
+    def get_safe_data(ticker):
+        d = yf.download(ticker, period='20d', progress=False)['Close'].ffill()
+        if isinstance(d, pd.DataFrame): d = d.iloc[:, 0]
+        return d
+
     try:
-        # Descarga individual para evitar problemas de alineación
-        sp_df = yf.download('^GSPC', period='60d', progress=False)['Close'].ffill()
-        vix_df = yf.download('^VIX', period='60d', progress=False)['Close'].ffill()
-        dxy_df = yf.download('DX-Y.NYB', period='60d', progress=False)['Close'].ffill()
+        sp_df = get_safe_data('^GSPC')
+        vix_df = get_safe_data('^VIX')
+        dxy_df = get_safe_data('DX-Y.NYB')
 
         m1, m2, m3 = st.columns(3)
-        sp_last = sp_df.iloc[-1]
-        vix_last = vix_df.iloc[-1]
-        dxy_last = dxy_df.iloc[-1]
+        sp_last, vix_last, dxy_last = sp_df.iloc[-1], vix_df.iloc[-1], dxy_df.iloc[-1]
         
         m1.metric("S&P 500", f"{sp_last:.2f}", f"{sp_df.pct_change().iloc[-1]*100:.2f}%")
         m2.metric("VIX Index", f"{vix_last:.2f}", f"{vix_last - vix_df.iloc[-2]:+.2f}")
@@ -117,14 +120,13 @@ with tab4:
 
         fig_sent = go.Figure()
         fig_sent.add_trace(go.Scatter(x=sp_df.index, y=sp_df, name="S&P 500", line=dict(color='#00ffcc', width=2), yaxis="y1"))
-        fig_sent.add_trace(go.Scatter(x=vix_df.index, y=vix_df, name="VIX (Miedo)", line=dict(color='#ff4b4b', width=2, dash='dot'), yaxis="y2"))
+        fig_sent.add_trace(go.Scatter(x=vix_df.index, y=vix_df, name="VIX", line=dict(color='#ff4b4b', width=2, dash='dot'), yaxis="y2"))
         
-        fig_sent.update_layout(template="plotly_dark", yaxis=dict(title="Precio S&P 500", side="left", showgrid=False),
-            yaxis2=dict(title="Nivel VIX", side="right", overlaying="y", showgrid=False),
+        fig_sent.update_layout(template="plotly_dark", yaxis=dict(title="S&P 500", side="left", showgrid=False),
+            yaxis2=dict(title="VIX", side="right", overlaying="y", showgrid=False),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), height=450)
         st.plotly_chart(fig_sent, use_container_width=True)
 
-        # Lógica Semáforo
         score = 0
         if vix_last > 20: score += 1
         if vix_last > 28: score += 1
@@ -135,9 +137,8 @@ with tab4:
         colors = ["#00ffcc", "#ffd700", "#ff8c00", "#ff4b4b"]
         idx = min(score, 3)
         st.markdown(f'<div class="risk-banner" style="background-color:{colors[idx]};">ESTADO MACRO: {labels[idx]}</div>', unsafe_allow_html=True)
-        
-    except Exception as e:
-        st.error("Error en Sentinel: El mercado podría estar enviando datos incompletos.")
+    except:
+        st.error("Error crítico en Sentinel. Verificando conexión...")
 
 with tab5:
     st.subheader("🌊 Vol-Monitor")
