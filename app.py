@@ -38,6 +38,10 @@ def analyze_asset(ticker):
         df['Ret'] = df['Close'].pct_change()
         df['Vol_Proxy'] = (df['High'] - df['Low']) * 100000
         df['RMF'] = df['Close'] * df['Vol_Proxy']
+        
+        # --- NUEVO: Cálculo de Volumen Relativo ---
+        df['RVOL'] = df['Vol_Proxy'] / df['Vol_Proxy'].rolling(20).mean()
+        
         r2_series = []
         for i in range(len(df)):
             if i < 30: r2_series.append(0); continue
@@ -49,11 +53,21 @@ def analyze_asset(ticker):
         z_val = ((diff - diff.rolling(40).mean()) / (diff.rolling(40).std() + 1e-10)).iloc[-1]
         hurst = calcular_hurst(df['Close'].tail(50).values.flatten())
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
-        return {'df': df, 'price': float(df['Close'].iloc[-1]), 'z': z_val, 'r2': df['R2_Dynamic'].iloc[-1], 'hurst': hurst, 'ema': float(ema_21), 'vol': df['Ret'].tail(30).std()}
+        
+        return {
+            'df': df, 
+            'price': float(df['Close'].iloc[-1]), 
+            'z': z_val, 
+            'r2': df['R2_Dynamic'].iloc[-1], 
+            'hurst': hurst, 
+            'ema': float(ema_21), 
+            'vol': df['Ret'].tail(30).std(),
+            'rvol': df['RVOL'].iloc[-1] # Añadido al diccionario
+        }
     except: return None
 
-# --- 3. LISTA DE ACTIVOS (Sin cambios) ---
-ASSETS = ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDJPY=X', 'GC=F', 'BTC-USD', '^GSPC']
+# --- 3. LISTA DE ACTIVOS (Añadido USDCHF) ---
+ASSETS = ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDJPY=X', 'USDCHF=X', 'GC=F', 'BTC-USD', '^GSPC']
 
 # --- 4. PESTAÑAS ---
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 ADN", "🎯 Ejecución Pro", "🎲 Montecarlo", "🛡️ Sentinel", "🌊 Vol-Monitor", "🏦 Banks Detector"])
@@ -89,7 +103,6 @@ with tab2:
             st.markdown(f'<div class="tp-card">TP Semanal Prime (1.2σ): {tp_w1:.5f}</div>', unsafe_allow_html=True)
             st.markdown(f'<div class="tp-card" style="border-top-color:#ffd700">TP Semanal Extremo (2σ): {tp_w2:.5f}</div>', unsafe_allow_html=True)
 
-# --- RE-MODIFICACIÓN QUIRÚRGICA TAB 3: MONTECARLO ---
 with tab3:
     st.subheader("🎲 Simulación Montecarlo vs Señal ADN")
     target_m = st.selectbox("Analizar Probabilidades:", ASSETS, key="mc_s")
@@ -99,28 +112,25 @@ with tab3:
         rets = np.random.normal(dm['df']['Ret'].mean(), dm['vol'], (sims, dias))
         caminos = dm['price'] * (1 + rets).cumprod(axis=1)
         
-        # Gráfico
         fig_m = go.Figure()
         for i in range(15): fig_m.add_trace(go.Scatter(y=caminos[i], line=dict(width=1), opacity=0.3, showlegend=False))
         fig_m.add_trace(go.Scatter(y=np.percentile(caminos, 50, axis=0), line=dict(color='#00ffcc', width=4), name="Mediana"))
         st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400), use_container_width=True)
         
-        # Probabilidad de Éxito Conectada a la Señal ADN
         z_score = dm['z']
-        if z_score > 1.6: # Es una señal de VENTA
+        if z_score > 1.6: 
             prob_exito = (caminos[:, -1] < dm['price']).sum() / sims * 100
             label_tipo = "BAJISTA (Venta)"
-        elif z_score < -1.6: # Es una señal de COMPRA
+        elif z_score < -1.6: 
             prob_exito = (caminos[:, -1] > dm['price']).sum() / sims * 100
             label_tipo = "ALCISTA (Compra)"
-        else: # Neutral
+        else: 
             prob_exito = 50.0
             label_tipo = "NEUTRAL"
             
         st.metric(f"Probabilidad de éxito de la señal {label_tipo}", f"{prob_exito:.1f}%")
         st.caption("Esta probabilidad mide cuántas trayectorias terminan a favor de la ineficiencia detectada en el ADN.")
 
-# --- PESTAÑAS 4, 5 Y 6 (Sin cambios) ---
 with tab4:
     st.subheader("🛡️ Sentinel Macro")
     def get_safe_data(ticker):
@@ -143,14 +153,23 @@ with tab4:
         clrs = ["#00ffcc", "#ffd700", "#ff8c00", "#ff4b4b"]; lbls = ["ESTABLE", "PRECAUCIÓN", "RIESGO", "PÁNICO"]
         st.markdown(f'<div class="risk-banner" style="background-color:{clrs[min(score, 3)]};">ESTADO MACRO: {lbls[min(score, 3)]}</div>', unsafe_allow_html=True)
 
+# --- MODIFICACIÓN TAB 5: VOL-MONITOR CON RVOL ---
 with tab5:
-    st.subheader("🌊 Vol-Monitor")
+    st.subheader("🌊 Vol-Monitor & Relative Volume")
     target_v = st.selectbox("Activo Detalle:", ASSETS, key="v_s")
     dv = analyze_asset(target_v)
     if dv:
-        fig_h = px.histogram(dv['df'], x="Ret", nbins=50, title="Distribución de Riesgo")
-        fig_h.add_vline(x=dv['df']['Ret'].iloc[-1], line_color="red", line_width=4)
-        st.plotly_chart(fig_h.update_layout(template="plotly_dark"), use_container_width=True)
+        col_v1, col_v2 = st.columns([2, 1])
+        with col_v1:
+            fig_h = px.histogram(dv['df'], x="Ret", nbins=50, title="Distribución de Riesgo (Retornos)")
+            fig_h.add_vline(x=dv['df']['Ret'].iloc[-1], line_color="red", line_width=4)
+            st.plotly_chart(fig_h.update_layout(template="plotly_dark"), use_container_width=True)
+        
+        with col_v2:
+            rvol_val = dv['rvol']
+            rvol_color = "normal" if rvol_val < 2.0 else "inverse" # Rojo si es > 2.0 (Anomalía)
+            st.metric("Volumen Relativo (RVOL)", f"{rvol_val:.2f}x", delta=f"{rvol_val-1:.2f} vs media", delta_color=rvol_color)
+            st.write("> **Interpretación:** Un RVOL > 2.0 indica una inyección de volumen institucional inusual. Si coincide con un Z-Diff extremo, la probabilidad de reversión aumenta significativamente.")
 
 with tab6:
     st.subheader("🏦 Banks Detector")
@@ -165,7 +184,7 @@ with tab6:
             st.plotly_chart(go.Figure(data=[go.Bar(x=df_b.index, y=df_b['RMF'].abs(), marker_color=clrs)]).update_layout(template="plotly_dark"), use_container_width=True)
     with col_b2:
         st.write("**Global Yield Spreads (10Y)**")
-        yields = {'EUR/USD': -1.85, 'GBP/USD': -0.15, 'CAD/USD': -0.75, 'AUD/USD': 0.15, 'JPY/USD': -3.40}
+        yields = {'EUR/USD': -1.85, 'GBP/USD': -0.15, 'CAD/USD': -0.75, 'AUD/USD': 0.15, 'JPY/USD': -3.40, 'CHF/USD': -2.10} # Añadido CHF al spread
         for pair, val in yields.items():
             color = "#00ffcc" if val > -1.0 else "#ff4b4b"
             st.markdown(f'<div class="bank-card">{pair} Spread: <span style="color:{color}">{val:+.2f}%</span></div>', unsafe_allow_html=True)
