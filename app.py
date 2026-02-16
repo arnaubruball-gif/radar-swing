@@ -178,13 +178,11 @@ with tab6:
             color = "#00ffcc" if val > -1.0 else "#ff4b4b"
             st.markdown(f'<div class="bank-card">{pair} Spread: <span style="color:{color}">{val:+.2f}%</span></div>', unsafe_allow_html=True)
 
-# --- NUEVA PESTAÑA 7: COT INSTITUTIONAL (OPTIMIZADA) ---
+# --- NUEVA PESTAÑA 7: COT INSTITUTIONAL (CORREGIDA) ---
 with tab7:
     st.subheader("🏛️ COT Insight: Asset Managers Sentiment")
     st.write("Análisis de posicionamiento por divisa base (Contratos Netos).")
     
-    # Datos del COT por Divisa Base (Asset Managers - Ajustado)
-    # Net = Longs - Shorts de los Asset Managers
     cot_db = {
         'USD (Dólar Index)': {'long': 45000, 'short': 12000, 'prev_net': 28000, 'bias': 'Bullish'},
         'EUR (Euro)': {'long': 210500, 'short': 85000, 'prev_net': 110000, 'bias': 'Extreme Bullish'},
@@ -198,13 +196,13 @@ with tab7:
     selected_curr = st.selectbox("Seleccionar Divisa:", list(cot_db.keys()))
     data_c = cot_db[selected_curr]
     
-    # Cálculos
     total = data_c['long'] + data_c['short']
     net_actual = data_c['long'] - data_c['short']
     cambio_neto = net_actual - data_c['prev_net']
     pct_long = (data_c['long'] / total) * 100
     pct_short = (data_c['short'] / total) * 100
 
+    # Definimos las 3 columnas
     col_c1, col_c2, col_c3 = st.columns([1, 1, 1])
     
     with col_c1:
@@ -215,33 +213,27 @@ with tab7:
         st.metric("Dominio Long", f"{pct_long:.1f}%", delta=f"{pct_long-50:.1f}% vs Neutral", delta_color="normal" if pct_long > 50 else "inverse")
         st.write(f"**Sesgo:** {data_c['bias']}")
 
-    with col_col3:
-        # Gráfico de Barras de Sentimiento (Evita el efecto aplastado)
+    with col_c3: # <-- CORREGIDO: Antes decía col_col3
         fig_sent = go.Figure(go.Bar(
             x=[pct_long, pct_short],
             y=['Compradores', 'Vendedores'],
             orientation='h',
             marker_color=['#00ffcc', '#ff4b4b']
         ))
-        fig_sent.update_layout(template="plotly_dark", height=200, margin=dict(l=20, r=20, t=20, b=20),
+        fig_sent.update_layout(template="plotly_dark", height=200, margin=dict(l=10, r=10, t=10, b=10),
                               xaxis=dict(range=[0, 100], title="% del Total"))
         st.plotly_chart(fig_sent, use_container_width=True)
 
-    # --- INDICADOR DE DINÁMICA DE CAPITAL ---
-    st.write("**Dinámica del 'Smart Money' (Últimas 3 Semanas)**")
-    # Creamos una curva con "relieve" para ver el flujo de capital
+    st.write("**Dinámica del 'Smart Money' (Flujo de Capital)**")
     hist_net = [data_c['prev_net'] * 0.9, data_c['prev_net'], net_actual]
-    fig_flow = px.area(x=["2 Semanas", "Semana Pasada", "Actual"], y=hist_net, 
-                       labels={'x': '', 'y': 'Contratos Netos'})
+    fig_flow = px.area(x=["Semana -2", "Semana -1", "Actual"], y=hist_net)
     fig_flow.update_traces(line_color='#ffd700', fillcolor='rgba(255, 215, 0, 0.2)')
-    fig_flow.update_layout(template="plotly_dark", height=250, yaxis=dict(showgrid=False))
+    fig_flow.update_layout(template="plotly_dark", height=250, yaxis=dict(showgrid=False), xaxis_title=None, yaxis_title="Contratos Netos")
     st.plotly_chart(fig_flow, use_container_width=True)
 
     st.markdown(f"""
     <div class="cot-card">
     <b>💡 Confluencia Argos para {selected_curr}:</b><br>
-    Si el ADN marca <b>COMPRA</b> y el dominio Long es > 60%, la probabilidad de éxito aumenta un 20%. 
-    Si el ADN marca <b>COMPRA</b> pero los institucionales están vendiendo (Dominio Long < 40%), cuidado: 
-    podrías estar operando contra el Smart Money.
+    Busca que el ADN y el dominio Institucional coincidan. Si hay divergencia, reduce el lotaje.
     </div>
     """, unsafe_allow_html=True)
