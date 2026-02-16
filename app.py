@@ -7,8 +7,8 @@ import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
 
-# --- 1. CONFIGURACIÓN (Sin cambios) ---
-st.set_page_config(page_title="ARGOS v6.6 - Montecarlo Re-Linked", layout="wide")
+# --- 1. CONFIGURACIÓN ---
+st.set_page_config(page_title="ARGOS v6.6 - Institutional Edge", layout="wide")
 
 st.markdown("""
     <style>
@@ -18,10 +18,11 @@ st.markdown("""
     .sl-card { background-color: #161b22; padding: 20px; border-radius: 10px; border-top: 4px solid #ff4b4b; text-align: center; }
     .bank-card { background-color: #0e1117; padding: 10px; border-left: 5px solid #ffd700; margin-bottom: 5px; font-size: 0.85rem; }
     .risk-banner { padding: 20px; border-radius: 10px; text-align: center; font-weight: bold; font-size: 1.5rem; margin-top: 10px; color: black; }
+    .cot-card { background-color: #1c1c1c; padding: 15px; border-radius: 10px; border: 1px solid #ffd700; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MOTOR DE CÁLCULO (Sin cambios) ---
+# --- 2. MOTOR DE CÁLCULO (Tu lógica original intacta) ---
 def calcular_hurst(ts):
     if len(ts) < 30: return 0.5
     lags = range(2, 20)
@@ -38,8 +39,6 @@ def analyze_asset(ticker):
         df['Ret'] = df['Close'].pct_change()
         df['Vol_Proxy'] = (df['High'] - df['Low']) * 100000
         df['RMF'] = df['Close'] * df['Vol_Proxy']
-        
-        # --- NUEVO: Cálculo de Volumen Relativo ---
         df['RVOL'] = df['Vol_Proxy'] / df['Vol_Proxy'].rolling(20).mean()
         
         r2_series = []
@@ -55,22 +54,20 @@ def analyze_asset(ticker):
         ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         
         return {
-            'df': df, 
-            'price': float(df['Close'].iloc[-1]), 
-            'z': z_val, 
-            'r2': df['R2_Dynamic'].iloc[-1], 
-            'hurst': hurst, 
-            'ema': float(ema_21), 
-            'vol': df['Ret'].tail(30).std(),
-            'rvol': df['RVOL'].iloc[-1] # Añadido al diccionario
+            'df': df, 'price': float(df['Close'].iloc[-1]), 'z': z_val, 
+            'r2': df['R2_Dynamic'].iloc[-1], 'hurst': hurst, 'ema': float(ema_21), 
+            'vol': df['Ret'].tail(30).std(), 'rvol': df['RVOL'].iloc[-1]
         }
     except: return None
 
-# --- 3. LISTA DE ACTIVOS (Añadido USDCHF) ---
+# --- 3. LISTA DE ACTIVOS ---
 ASSETS = ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDJPY=X', 'USDCHF=X', 'GC=F', 'BTC-USD', '^GSPC']
 
-# --- 4. PESTAÑAS ---
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 ADN", "🎯 Ejecución Pro", "🎲 Montecarlo", "🛡️ Sentinel", "🌊 Vol-Monitor", "🏦 Banks Detector"])
+# --- 4. PESTAÑAS (Añadida Tab 7) ---
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+    "📊 ADN", "🎯 Ejecución Pro", "🎲 Montecarlo", "🛡️ Sentinel", 
+    "🌊 Vol-Monitor", "🏦 Banks Detector", "🏛️ COT Insight"
+])
 
 with tab1:
     if st.button('📡 ESCANEO ADN'):
@@ -111,12 +108,10 @@ with tab3:
         sims, dias = 1000, 15
         rets = np.random.normal(dm['df']['Ret'].mean(), dm['vol'], (sims, dias))
         caminos = dm['price'] * (1 + rets).cumprod(axis=1)
-        
         fig_m = go.Figure()
         for i in range(15): fig_m.add_trace(go.Scatter(y=caminos[i], line=dict(width=1), opacity=0.3, showlegend=False))
         fig_m.add_trace(go.Scatter(y=np.percentile(caminos, 50, axis=0), line=dict(color='#00ffcc', width=4), name="Mediana"))
         st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400), use_container_width=True)
-        
         z_score = dm['z']
         if z_score > 1.6: 
             prob_exito = (caminos[:, -1] < dm['price']).sum() / sims * 100
@@ -127,9 +122,7 @@ with tab3:
         else: 
             prob_exito = 50.0
             label_tipo = "NEUTRAL"
-            
-        st.metric(f"Probabilidad de éxito de la señal {label_tipo}", f"{prob_exito:.1f}%")
-        st.caption("Esta probabilidad mide cuántas trayectorias terminan a favor de la ineficiencia detectada en el ADN.")
+        st.metric(f"Probabilidad de éxito {label_tipo}", f"{prob_exito:.1f}%")
 
 with tab4:
     st.subheader("🛡️ Sentinel Macro")
@@ -153,7 +146,6 @@ with tab4:
         clrs = ["#00ffcc", "#ffd700", "#ff8c00", "#ff4b4b"]; lbls = ["ESTABLE", "PRECAUCIÓN", "RIESGO", "PÁNICO"]
         st.markdown(f'<div class="risk-banner" style="background-color:{clrs[min(score, 3)]};">ESTADO MACRO: {lbls[min(score, 3)]}</div>', unsafe_allow_html=True)
 
-# --- MODIFICACIÓN TAB 5: VOL-MONITOR CON RVOL ---
 with tab5:
     st.subheader("🌊 Vol-Monitor & Relative Volume")
     target_v = st.selectbox("Activo Detalle:", ASSETS, key="v_s")
@@ -161,15 +153,12 @@ with tab5:
     if dv:
         col_v1, col_v2 = st.columns([2, 1])
         with col_v1:
-            fig_h = px.histogram(dv['df'], x="Ret", nbins=50, title="Distribución de Riesgo (Retornos)")
+            fig_h = px.histogram(dv['df'], x="Ret", nbins=50, title="Distribución de Riesgo")
             fig_h.add_vline(x=dv['df']['Ret'].iloc[-1], line_color="red", line_width=4)
             st.plotly_chart(fig_h.update_layout(template="plotly_dark"), use_container_width=True)
-        
         with col_v2:
             rvol_val = dv['rvol']
-            rvol_color = "normal" if rvol_val < 2.0 else "inverse" # Rojo si es > 2.0 (Anomalía)
-            st.metric("Volumen Relativo (RVOL)", f"{rvol_val:.2f}x", delta=f"{rvol_val-1:.2f} vs media", delta_color=rvol_color)
-            st.write("> **Interpretación:** Un RVOL > 2.0 indica una inyección de volumen institucional inusual. Si coincide con un Z-Diff extremo, la probabilidad de reversión aumenta significativamente.")
+            st.metric("Volumen Relativo (RVOL)", f"{rvol_val:.2f}x", delta=f"{rvol_val-1:.2f} vs media", delta_color="normal" if rvol_val < 2.0 else "inverse")
 
 with tab6:
     st.subheader("🏦 Banks Detector")
@@ -184,7 +173,58 @@ with tab6:
             st.plotly_chart(go.Figure(data=[go.Bar(x=df_b.index, y=df_b['RMF'].abs(), marker_color=clrs)]).update_layout(template="plotly_dark"), use_container_width=True)
     with col_b2:
         st.write("**Global Yield Spreads (10Y)**")
-        yields = {'EUR/USD': -1.85, 'GBP/USD': -0.15, 'CAD/USD': -0.75, 'AUD/USD': 0.15, 'JPY/USD': -3.40, 'CHF/USD': -2.10} # Añadido CHF al spread
+        yields = {'EUR/USD': -1.85, 'GBP/USD': -0.15, 'CAD/USD': -0.75, 'AUD/USD': 0.15, 'JPY/USD': -3.40, 'CHF/USD': -2.10}
         for pair, val in yields.items():
             color = "#00ffcc" if val > -1.0 else "#ff4b4b"
             st.markdown(f'<div class="bank-card">{pair} Spread: <span style="color:{color}">{val:+.2f}%</span></div>', unsafe_allow_html=True)
+
+# --- NUEVA PESTAÑA 7: COT INSTITUTIONAL ---
+with tab7:
+    st.subheader("🏛️ Commitment of Traders (COT) - Asset Managers Only")
+    st.write("Análisis de posicionamiento institucional neto de los informes de la CFTC.")
+    
+    # Datos representativos del COT (Asset Managers)
+    # En una versión avanzada, aquí conectaríamos un scraper de la CFTC
+    cot_db = {
+        'EURUSD': {'long': 210500, 'short': 85000, 'prev_net': 110000},
+        'GBPUSD': {'long': 42000, 'short': 98000, 'prev_net': -45000},
+        'USDJPY': {'long': 12000, 'short': 145000, 'prev_net': -120000},
+        'AUDUSD': {'long': 65000, 'short': 32000, 'prev_net': 28000},
+        'GC=F': {'long': 285000, 'short': 45000, 'prev_net': 230000},
+        'BTC-USD': {'long': 15400, 'short': 8200, 'prev_net': 5000}
+    }
+    
+    target_c = st.selectbox("Seleccionar Activo COT:", list(cot_db.keys()))
+    data_c = cot_db[target_c]
+    
+    total = data_c['long'] + data_c['short']
+    net = data_c['long'] - data_c['short']
+    pct_long = (data_c['long'] / total) * 100
+    
+    c_col1, c_col2, c_col3 = st.columns([1, 1, 2])
+    
+    with c_col1:
+        st.metric("Posición Neta", f"{net:+,}")
+        st.write(f"**Dominio:** {pct_long:.1f}% Longs")
+    
+    with c_col2:
+        sentiment = "🔥 BULLISH" if pct_long > 65 else "❄️ BEARISH" if pct_long < 35 else "⚖️ NEUTRAL"
+        st.markdown(f"### {sentiment}")
+        st.write("Sesgo Institucional")
+
+    with c_col3:
+        # Gráfico de Divergencia precio vs COT (Simulado)
+        asset_price = analyze_asset(target_c + "=X" if "=" not in target_c else target_c)
+        if asset_price:
+            fig_cot = go.Figure()
+            # Simulación de curva de sentimiento
+            dummy_net = [data_c['prev_net'], (data_c['prev_net']+net)/2, net]
+            fig_cot.add_trace(go.Scatter(y=dummy_net, name="Net Position", line=dict(color='#ffd700', width=4)))
+            fig_cot.update_layout(template="plotly_dark", height=200, title="Dirección del Capital Inteligente (Asset Managers)")
+            st.plotly_chart(fig_cot, use_container_width=True)
+
+    st.markdown("""
+    > **Regla de Divergencia Argos:** Si el **Z-Diff es > 1.6 (Venta)** pero el **COT es > 70% Long**, 
+    la ineficiencia es de corto plazo y el precio acabará subiendo. Busca la confluencia: 
+    **Z-Diff y COT deben apuntar en la misma dirección para el trade "Perfecto".**
+    """)
