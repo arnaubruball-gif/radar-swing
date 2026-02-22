@@ -219,19 +219,35 @@ with tab7:
         st.plotly_chart(fig_sent.update_layout(template="plotly_dark", height=150, margin=dict(l=0,r=0,t=0,b=0)), use_container_width=True)
 
 with tab8:
-    st.subheader("💰 Gestión de Riesgo Swing")
-    capital = st.number_input("Capital Cuenta ($):", value=10000)
+    st.subheader("💰 Gestión de Riesgo Swing (Corregida)")
+    capital = st.number_input("Capital Cuenta ($):", value=1000)
     riesgo_p = st.slider("Riesgo por trade (%):", 0.1, 2.0, 1.0)
     target_r = st.selectbox("Activo:", ASSETS, key="risk_sel")
     dr = analyze_asset(target_r)
+    
     if dr:
-        r_usd = capital * (riesgo_p/100)
+        r_usd = capital * (riesgo_p / 100)
         p, v = dr['price'], dr['vol']
-        sl_dist = p * (v*2.5)
+        
+        # Stop Loss a 2.5 desviaciones estándar
+        dist_sl_precio = p * (v * 2.5) 
+        
+        # AJUSTE DE LOTAJE SEGÚN ACTIVO
+        if "USD" in target_r and "BTC" not in target_r: # Es Forex (EURUSD, GBPUSD, etc)
+            # 1 lote estándar = 100,000 unidades. 
+            # El riesgo por lote es dist_sl_precio * 100,000
+            lotaje_sugerido = r_usd / (dist_sl_precio * 100000)
+        elif "BTC" in target_r or "GC=F" in target_r: # Crypto u Oro
+            lotaje_sugerido = r_usd / dist_sl_precio
+        else: # Índices u otros
+            lotaje_sugerido = r_usd / (dist_sl_precio * 10)
+
         st.markdown(f"""
-        <div style="background-color:#1e2130; padding:20px; border-radius:10px;">
-        <h3>Calculadora Estructural</h3>
-        Pérdida máxima: <b>${r_usd:.2f}</b><br>
-        Lotaje sugerido: <b>{(r_usd/sl_dist if 'USD' in target_r else 0.1):.2f}</b>
+        <div style="background-color:#1e2130; padding:20px; border-radius:10px; border-left: 5px solid #ff4b4b;">
+        <h3>Plan de Trading Realista</h3>
+        Dinero en riesgo: <b>${r_usd:.2f}</b><br>
+        Distancia Stop Loss: <b>{dist_sl_precio:.5f} puntos</b><br>
+        Lotaje sugerido: <h1 style="color:#00ffcc;">{lotaje_sugerido:.3f} Lotes</h1>
+        <small>En EURUSD, 0.01 lotes es lo mínimo (micro-lote).</small>
         </div>
         """, unsafe_allow_html=True)
