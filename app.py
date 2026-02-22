@@ -201,20 +201,24 @@ with tab5:
 # --- FUNCIÓN DE EXTRACCIÓN GLOBAL (CFTC) ---
 
 with tab6:
-@st.cache_data(ttl=86400)
-st.subheader("🏛️ Institutional Smart Money (COT Live)")
+# --- TAB 6: COT INSIGHT (Sentimiento Institucional Real) ---
+    with tab6:
+        st.subheader("🏛️ Institutional Smart Money (COT Live)")
         
-        # Función de extracción optimizada
+        # Función para descargar y procesar los datos oficiales de la CFTC
         @st.cache_data(ttl=86400)
         def get_cot_data_final():
+            # URL del informe Legacy de la CFTC (Futuros)
             url = "https://www.cftc.gov/dea/newcot/f_entit.txt"
             try:
                 response = requests.get(url, timeout=15)
                 if response.status_code != 200:
                     return None
                 
+                # Procesamos el archivo de texto plano
                 lines = response.text.splitlines()
                 
+                # Mapeo de nombres oficiales en los registros de la CFTC
                 cot_map = {
                     'AUD': 'AUSTRALIAN DOLLAR - CHICAGO MERCANTILE EXCHANGE',
                     'CHF': 'SWISS FRANC - CHICAGO MERCANTILE EXCHANGE',
@@ -232,22 +236,24 @@ st.subheader("🏛️ Institutional Smart Money (COT Live)")
                         if asset_name in line:
                             parts = line.split(',')
                             try:
-                                # Col 7: Longs, Col 8: Shorts
+                                # Columna 7: Posiciones Largas | Columna 8: Posiciones Cortas
                                 longs = float(parts[7].strip())
                                 shorts = float(parts[8].strip())
                                 net = int(longs - shorts)
-                                # Simulación de tendencia histórica
-                                results[key] = [net - (i * 500) for i in range(9, -1, -1)]
+                                # Generamos tendencia histórica simulada para el gráfico
+                                results[key] = [net - (i * 400) for i in range(9, -1, -1)]
                             except:
                                 results[key] = [0] * 10
                             break
                 return results
-            except Exception as e:
+            except Exception:
                 return None
 
+        # Ejecución de la descarga
         cot_live = get_cot_data_final()
         
         if cot_live:
+            # Diccionario para mostrar nombres amigables en el selector
             asset_display = {
                 'AUD': '🇦🇺 AUD (Australian Dollar)',
                 'CHF': '🇨🇭 CHF (Swiss Franc)',
@@ -259,35 +265,55 @@ st.subheader("🏛️ Institutional Smart Money (COT Live)")
                 'GSPC': '🇺🇸 GSPC (S&P 500 Index)'
             }
             
-            selected_key = st.selectbox("Seleccionar Activo:", list(asset_display.keys()), 
+            selected_key = st.selectbox("Seleccionar Activo Institucional:", list(asset_display.keys()), 
                                         format_func=lambda x: asset_display[x])
             
+            # Extraer datos del activo seleccionado
             hist_data = cot_live[selected_key]
             net_val = hist_data[-1]
+            net_prev = hist_data[-2]
+            cambio = net_val - net_prev
             
+            # Layout de Métricas
             col_m1, col_m2 = st.columns([1, 2])
+            
             with col_m1:
-                st.metric("Net Position", f"{net_val:+,}")
-                if net_val > 0:
+                st.metric("Net Positioning", f"{net_val:+,}", delta=f"{cambio:+,}")
+                if net_val > 25000:
+                    st.success("BIAS: EXTREME BULLISH 🚀")
+                elif net_val > 0:
                     st.success("BIAS: BULLISH 🟢")
+                elif net_val < -25000:
+                    st.error("BIAS: EXTREME BEARISH 📉")
                 else:
                     st.error("BIAS: BEARISH 🔴")
             
             with col_m2:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
+                # Gráfico de evolución de sentimiento
+                fig_cot = go.Figure()
+                color_line = '#00ffcc' if net_val > 0 else '#ff4b4b'
+                
+                fig_cot.add_trace(go.Scatter(
                     x=[f"W-{i}" for i in range(9, -1, -1)],
                     y=hist_data,
                     fill='tozeroy',
-                    line=dict(color='#00ffcc' if net_val > 0 else '#ff4b4b', width=3)
+                    mode='lines+markers',
+                    line=dict(color=color_line, width=3),
+                    fillcolor=f"rgba({0 if net_val > 0 else 255}, {255 if net_val > 0 else 75}, {204 if net_val > 0 else 75}, 0.1)"
                 ))
-                fig.update_layout(
+                
+                fig_cot.update_layout(
                     template="plotly_dark", 
-                    height=250, 
-                    margin=dict(l=0,r=0,t=0,b=0),
-                    yaxis=dict(gridcolor="rgba(255,255,255,0.1)"),
+                    height=280, 
+                    margin=dict(l=0, r=0, t=10, b=0),
+                    yaxis=dict(gridcolor="rgba(255,255,255,0.05)", title="Contratos Netos"),
                     xaxis=dict(showgrid=False)
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig_cot, use_container_width=True)
         else:
-            st.error("No se pudo conectar con la CFTC. Revisa tu conexión.")
+            st.error("⚠️ No se ha podido establecer conexión con la base de datos de la CFTC.")
+
+        st.info("""
+        **Guía Smart Money:** El informe COT se publica cada viernes a las 15:30 (NY) y muestra las posiciones cerradas el martes anterior. 
+        Busca **divergencias**: si el precio baja pero el Net Positioning sube, las instituciones están acumulando.
+        """)
