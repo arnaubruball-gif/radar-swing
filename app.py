@@ -8,7 +8,7 @@ import plotly.express as px
 from datetime import datetime
 
 # --- 1. CONFIGURACIÓN ---
-st.set_page_config(page_title="swing JDetector- Institutional Edge", layout="wide")
+st.set_page_config(page_title="JDetector- Institutional Edge", layout="wide")
 
 st.markdown("""
     <style>
@@ -19,10 +19,11 @@ st.markdown("""
     .bank-card { background-color: #0e1117; padding: 10px; border-left: 5px solid #ffd700; margin-bottom: 5px; font-size: 0.85rem; }
     .risk-banner { padding: 20px; border-radius: 10px; text-align: center; font-weight: bold; font-size: 1.5rem; margin-top: 10px; color: black; }
     .cot-card { background-color: #1c1c1c; padding: 15px; border-radius: 10px; border: 1px solid #ffd700; }
+    .trigger-card { background-color: #12141d; padding: 15px; border-radius: 10px; border: 1px solid #30363d; margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MOTOR DE CÁLCULO (Tu lógica original intacta) ---
+# --- 2. MOTOR DE CÁLCULO ---
 def calcular_hurst(ts):
     if len(ts) < 30: return 0.5
     lags = range(2, 20)
@@ -63,10 +64,10 @@ def analyze_asset(ticker):
 # --- 3. LISTA DE ACTIVOS ---
 ASSETS = ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDJPY=X', 'USDCHF=X', 'GC=F', 'BTC-USD', '^GSPC']
 
-# --- 4. PESTAÑAS (Añadida Tab 7) ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+# --- 4. PESTAÑAS ---
+tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
     "📊 ADN", "🎯 Ejecución Pro", "🎲 Montecarlo", "🛡️ Sentinel", 
-    "🌊 Vol-Monitor", "🏦 Banks Detector", "🏛️ COT Insight"
+    "🌊 Vol-Monitor", "🏦 Banks Detector", "🏛️ COT Insight", "💰 RIESGO"
 ])
 
 with tab1:
@@ -80,32 +81,54 @@ with tab1:
         st.dataframe(pd.DataFrame(results, columns=['Activo', 'Precio', 'R2', 'Z-Diff', 'Hurst', 'Veredicto']), use_container_width=True)
 
 with tab2:
-    st.subheader("🎯 Niveles de Salida (Volatilidad Implícita)")
+    st.subheader("🎯 Gatillo de Entrada Confirmada (3-Day Breakout)")
     target_e = st.selectbox("Seleccionar Activo:", ASSETS, key="exec_s")
     de = analyze_asset(target_e)
     if de:
-        p, v, z = de['price'], de['vol'], de['z']
-        sl = p * (1 + v*1.5) if z > 0 else p * (1 - v*1.5)
-        c1, c2 = st.columns(2)
+        p, v, z, df_e = de['price'], de['vol'], de['z'], de['df']
+        
+        # Lógica de Gatillo: Máximo/Mínimo de 3 días previos (sin contar la vela actual)
+        h3 = df_e['High'].iloc[-4:-1].max()
+        l3 = df_e['Low'].iloc[-4:-1].min()
+        ema = de['ema']
+        
+        c1, c2 = st.columns([1.5, 1])
         with c1:
-            st.markdown("### 📅 Objetivos Diarios")
-            tp_d = p * (1 - v if z > 0 else 1 + v)
-            st.markdown(f'<div class="tp-card">TP Diario (1σ): {tp_d:.5f}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="sl-card">Stop Loss Estadístico: {sl:.5f}</div>', unsafe_allow_html=True)
+            st.markdown("### 🚦 Estado de Confirmación")
+            if z < -1.6: # ADN dice Compra
+                if p > h3 and p > ema:
+                    st.success(f"🔥 SEÑAL COMPLETA: El precio ha roto el máximo de 3 días ({h3:.5f}) y está sobre la EMA21. ¡DISPARAR COMPRA!")
+                else:
+                    st.warning(f"⏳ ESPERAR: ADN es alcista, pero el gatillo se activa al romper los {h3:.5f} con fuerza.")
+            elif z > 1.6: # ADN dice Venta
+                if p < l3 and p < ema:
+                    st.error(f"🔥 SEÑAL COMPLETA: El precio ha roto el mínimo de 3 días ({l3:.5f}) y está bajo la EMA21. ¡DISPARAR VENTA!")
+                else:
+                    st.warning(f"⏳ ESPERAR: ADN es bajista, pero el gatillo se activa al romper los {l3:.5f} a la baja.")
+            else:
+                st.info("⚪ NEUTRAL: El ADN no muestra ventaja estadística en este timeframe estructural.")
+            
+            # Gráfico de Gatillo
+            fig_t = go.Figure(data=[go.Candlestick(x=df_e.index[-20:], open=df_e['Open'], high=df_e['High'], low=df_e['Low'], close=df_e['Close'], name="Precio")])
+            fig_t.add_hline(y=h3, line_dash="dash", line_color="#00ffcc", annotation_text="Trigger High")
+            fig_t.add_hline(y=l3, line_dash="dash", line_color="#ff4b4b", annotation_text="Trigger Low")
+            st.plotly_chart(fig_t.update_layout(template="plotly_dark", height=300, showlegend=False, margin=dict(l=0,r=0,t=0,b=0)), use_container_width=True)
+
         with c2:
-            st.markdown("### 🗓️ Objetivos Semanales")
-            v_w = v * np.sqrt(5)
-            tp_w1 = p * (1 - v_w * 1.2 if z > 0 else 1 + v_w * 1.2)
-            tp_w2 = p * (1 - v_w * 2.0 if z > 0 else 1 + v_w * 2.0)
-            st.markdown(f'<div class="tp-card">TP Semanal Prime (1.2σ): {tp_w1:.5f}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="tp-card" style="border-top-color:#ffd700">TP Semanal Extremo (2σ): {tp_w2:.5f}</div>', unsafe_allow_html=True)
+            st.markdown("### 📐 Niveles de Salida")
+            sl = p * (1 + v*2.5) if z > 0 else p * (1 - v*2.5)
+            tp_w = p * (1 - v*np.sqrt(5)*1.5 if z > 0 else 1 + v*np.sqrt(5)*1.5)
+            
+            st.markdown(f'<div class="tp-card">Take Profit (Estructural): {tp_w:.5f}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="sl-card">Stop Loss (2.5σ): {sl:.5f}</div>', unsafe_allow_html=True)
+            st.caption("Nota: El SL es más holgado (2.5σ) para evitar ser sacado por volatilidad diaria antes de que la tendencia se desarrolle.")
 
 with tab3:
-    st.subheader("🎲 Simulación Montecarlo vs Señal ADN")
+    st.subheader("🎲 Simulación Montecarlo (Proyección 30 días)")
     target_m = st.selectbox("Analizar Probabilidades:", ASSETS, key="mc_s")
     dm = analyze_asset(target_m)
     if dm:
-        sims, dias = 1000, 15
+        sims, dias = 1000, 30
         rets = np.random.normal(dm['df']['Ret'].mean(), dm['vol'], (sims, dias))
         caminos = dm['price'] * (1 + rets).cumprod(axis=1)
         fig_m = go.Figure()
@@ -113,16 +136,8 @@ with tab3:
         fig_m.add_trace(go.Scatter(y=np.percentile(caminos, 50, axis=0), line=dict(color='#00ffcc', width=4), name="Mediana"))
         st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400), use_container_width=True)
         z_score = dm['z']
-        if z_score > 1.6: 
-            prob_exito = (caminos[:, -1] < dm['price']).sum() / sims * 100
-            label_tipo = "BAJISTA (Venta)"
-        elif z_score < -1.6: 
-            prob_exito = (caminos[:, -1] > dm['price']).sum() / sims * 100
-            label_tipo = "ALCISTA (Compra)"
-        else: 
-            prob_exito = 50.0
-            label_tipo = "NEUTRAL"
-        st.metric(f"Probabilidad de éxito {label_tipo}", f"{prob_exito:.1f}%")
+        prob = (caminos[:, -1] < dm['price']).sum()/sims*100 if z_score > 0 else (caminos[:, -1] > dm['price']).sum()/sims*100
+        st.metric(f"Probabilidad de éxito", f"{prob:.1f}%")
 
 with tab4:
     st.subheader("🛡️ Sentinel Macro")
@@ -158,7 +173,7 @@ with tab5:
             st.plotly_chart(fig_h.update_layout(template="plotly_dark"), use_container_width=True)
         with col_v2:
             rvol_val = dv['rvol']
-            st.metric("Volumen Relativo (RVOL)", f"{rvol_val:.2f}x", delta=f"{rvol_val-1:.2f} vs media", delta_color="normal" if rvol_val < 2.0 else "inverse")
+            st.metric("Volumen Relativo (RVOL)", f"{rvol_val:.2f}x", delta=f"{rvol_val-1:.2f} vs media")
 
 with tab6:
     st.subheader("🏦 Banks Detector")
@@ -178,11 +193,8 @@ with tab6:
             color = "#00ffcc" if val > -1.0 else "#ff4b4b"
             st.markdown(f'<div class="bank-card">{pair} Spread: <span style="color:{color}">{val:+.2f}%</span></div>', unsafe_allow_html=True)
 
-# --- NUEVA PESTAÑA 7: COT INSTITUTIONAL (CORREGIDA) ---
 with tab7:
     st.subheader("🏛️ COT Insight: Asset Managers Sentiment")
-    st.write("Análisis de posicionamiento por divisa base (Contratos Netos).")
-    
     cot_db = {
         'USD (Dólar Index)': {'long': 45000, 'short': 12000, 'prev_net': 28000, 'bias': 'Bullish'},
         'EUR (Euro)': {'long': 210500, 'short': 85000, 'prev_net': 110000, 'bias': 'Extreme Bullish'},
@@ -192,48 +204,34 @@ with tab7:
         'CAD (Canadiense)': {'long': 25000, 'short': 45000, 'prev_net': -15000, 'bias': 'Neutral-Bearish'},
         'BTC (Bitcoin)': {'long': 15400, 'short': 8200, 'prev_net': 5000, 'bias': 'Bullish'}
     }
-    
     selected_curr = st.selectbox("Seleccionar Divisa:", list(cot_db.keys()))
     data_c = cot_db[selected_curr]
-    
     total = data_c['long'] + data_c['short']
     net_actual = data_c['long'] - data_c['short']
     cambio_neto = net_actual - data_c['prev_net']
     pct_long = (data_c['long'] / total) * 100
     pct_short = (data_c['short'] / total) * 100
-
-    # Definimos las 3 columnas
     col_c1, col_c2, col_c3 = st.columns([1, 1, 1])
-    
-    with col_c1:
-        st.metric("Posición Neta", f"{net_actual:+,}", delta=f"{cambio_neto:+,} vs Prev")
-        st.write(f"**Interés Abierto:** {total:,} contratos")
+    with col_c1: st.metric("Posición Neta", f"{net_actual:+,}", delta=f"{cambio_neto:+,}")
+    with col_c2: st.metric("Dominio Long", f"{pct_long:.1f}%", delta=f"{data_c['bias']}")
+    with col_c3:
+        fig_sent = go.Figure(go.Bar(x=[pct_long, pct_short], y=['L', 'S'], orientation='h', marker_color=['#00ffcc', '#ff4b4b']))
+        st.plotly_chart(fig_sent.update_layout(template="plotly_dark", height=150, margin=dict(l=0,r=0,t=0,b=0)), use_container_width=True)
 
-    with col_c2:
-        st.metric("Dominio Long", f"{pct_long:.1f}%", delta=f"{pct_long-50:.1f}% vs Neutral", delta_color="normal" if pct_long > 50 else "inverse")
-        st.write(f"**Sesgo:** {data_c['bias']}")
-
-    with col_c3: # <-- CORREGIDO: Antes decía col_col3
-        fig_sent = go.Figure(go.Bar(
-            x=[pct_long, pct_short],
-            y=['Compradores', 'Vendedores'],
-            orientation='h',
-            marker_color=['#00ffcc', '#ff4b4b']
-        ))
-        fig_sent.update_layout(template="plotly_dark", height=200, margin=dict(l=10, r=10, t=10, b=10),
-                              xaxis=dict(range=[0, 100], title="% del Total"))
-        st.plotly_chart(fig_sent, use_container_width=True)
-
-    st.write("**Dinámica del 'Smart Money' (Flujo de Capital)**")
-    hist_net = [data_c['prev_net'] * 0.9, data_c['prev_net'], net_actual]
-    fig_flow = px.area(x=["Semana -2", "Semana -1", "Actual"], y=hist_net)
-    fig_flow.update_traces(line_color='#ffd700', fillcolor='rgba(255, 215, 0, 0.2)')
-    fig_flow.update_layout(template="plotly_dark", height=250, yaxis=dict(showgrid=False), xaxis_title=None, yaxis_title="Contratos Netos")
-    st.plotly_chart(fig_flow, use_container_width=True)
-
-    st.markdown(f"""
-    <div class="cot-card">
-    <b>💡 Confluencia Argos para {selected_curr}:</b><br>
-    Busca que el ADN y el dominio Institucional coincidan. Si hay divergencia, reduce el lotaje.
-    </div>
-    """, unsafe_allow_html=True)
+with tab8:
+    st.subheader("💰 Gestión de Riesgo Swing")
+    capital = st.number_input("Capital Cuenta ($):", value=10000)
+    riesgo_p = st.slider("Riesgo por trade (%):", 0.1, 2.0, 1.0)
+    target_r = st.selectbox("Activo:", ASSETS, key="risk_sel")
+    dr = analyze_asset(target_r)
+    if dr:
+        r_usd = capital * (riesgo_p/100)
+        p, v = dr['price'], dr['vol']
+        sl_dist = p * (v*2.5)
+        st.markdown(f"""
+        <div style="background-color:#1e2130; padding:20px; border-radius:10px;">
+        <h3>Calculadora Estructural</h3>
+        Pérdida máxima: <b>${r_usd:.2f}</b><br>
+        Lotaje sugerido: <b>{(r_usd/sl_dist if 'USD' in target_r else 0.1):.2f}</b>
+        </div>
+        """, unsafe_allow_html=True)
