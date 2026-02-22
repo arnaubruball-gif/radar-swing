@@ -126,21 +126,59 @@ with tab2:
         p, v = de['price'], de['vol']
         sl_est = p * (1 - v*2.5) if de['z'] < 0 else p * (1 + v*2.5)
         st.write(f"**Precio Actual:** {p:.5f} | **Stop Loss Sugerido (Estructural):** {sl_est:.5f}")
+
 with tab3:
-    st.subheader("🎲 Simulación Montecarlo (Proyección 30 días)")
+    st.subheader("🎲 Simulación Montecarlo (Sesgo Institucional)")
     target_m = st.selectbox("Analizar Probabilidades:", ASSETS, key="mc_s")
     dm = analyze_asset(target_m)
+    
     if dm:
         sims, dias = 1000, 30
+        # Simulamos retornos basados en la volatilidad histórica
         rets = np.random.normal(dm['df']['Ret'].mean(), dm['vol'], (sims, dias))
         caminos = dm['price'] * (1 + rets).cumprod(axis=1)
+        
+        # Gráfico de Proyección
         fig_m = go.Figure()
-        for i in range(15): fig_m.add_trace(go.Scatter(y=caminos[i], line=dict(width=1), opacity=0.3, showlegend=False))
-        fig_m.add_trace(go.Scatter(y=np.percentile(caminos, 50, axis=0), line=dict(color='#00ffcc', width=4), name="Mediana"))
-        st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400), use_container_width=True)
+        for i in range(15): 
+            fig_m.add_trace(go.Scatter(y=caminos[i], line=dict(width=1), opacity=0.3, showlegend=False))
+        
+        mediana = np.percentile(caminos, 50, axis=0)
+        fig_m.add_trace(go.Scatter(y=mediana, line=dict(color='#00ffcc', width=4), name="Mediana Proyectada"))
+        st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400, title=f"Proyección 30d: {target_m}"), use_container_width=True)
+        
+        # --- NUEVA LÓGICA DE PROBABILIDAD DEFINIDA ---
         z_score = dm['z']
-        prob = (caminos[:, -1] < dm['price']).sum()/sims*100 if z_score > 0 else (caminos[:, -1] > dm['price']).sum()/sims*100
-        st.metric(f"Probabilidad de éxito", f"{prob:.1f}%")
+        precio_actual = dm['price']
+        precios_finales = caminos[:, -1]
+        
+        # Determinamos la dirección según el ADN para no ser neutrales
+        if z_score <= 0: # Sesgo Alcista (ADN dice que está barato o recuperando)
+            exitos = (precios_finales > precio_actual).sum()
+            direccion_tesis = "ALCISTA 🟢"
+            color_prob = "#00ffcc"
+        else: # Sesgo Bajista (ADN dice que está caro o distribuyendo)
+            exitos = (precios_finales < precio_actual).sum()
+            direccion_tesis = "BAJISTA 🚨"
+            color_prob = "#ff4b4b"
+            
+        prob_exito = (exitos / sims) * 100
+        
+        # Mostrar resultados con impacto visual
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f"""
+            <div style="background-color:#1e2130; padding:20px; border-radius:10px; border-left: 5px solid {color_prob};">
+                <small>Tesis Dominante ADN</small><br>
+                <b style="font-size:1.5rem; color:{color_prob};">{direccion_tesis}</b>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        with c2:
+            st.metric(f"Probabilidad de éxito (Montecarlo + ADN)", f"{prob_exito:.1f}%", 
+                      delta=f"{'Favor favorable' if prob_exito > 50 else 'Baja confluencia'}")
+
+        st.caption(f"Nota: La probabilidad se calcula sobre 1000 iteraciones buscando que el precio final sea {'superior' if z_score <= 0 else 'inferior'} al actual en 30 días.")
 
 with tab4:
     st.subheader("🛡️ Sentinel Macro")
