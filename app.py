@@ -161,8 +161,93 @@ with tab5:
         st.plotly_chart(go.Figure(data=[go.Bar(x=df_b.index, y=df_b['RMF'].abs(), marker_color=clrs)]).update_layout(template="plotly_dark", height=400), use_container_width=True)
 
 with tab6:
-    st.subheader("🏛️ COT Insight")
-    cot_db = {'USD (Dólar Index)': {'long': 45000, 'short': 12000, 'bias': 'Bullish'}, 'EUR (Euro)': {'long': 210500, 'short': 85000, 'bias': 'Extreme Bullish'}, 'BTC (Bitcoin)': {'long': 15400, 'short': 8200, 'bias': 'Bullish'}}
-    sel_c = st.selectbox("Divisa:", list(cot_db.keys()))
-    d_c = cot_db[sel_c]
-    st.metric("Sesgo", d_c['bias'], f"{d_c['long'] - d_c['short']} Net")
+    st.subheader("🏛️ COT Insight: Institutional Sentiment (10 Weeks)")
+    
+    # 1. Base de datos histórica (Simulando las últimas 10 semanas)
+    # En un entorno real, estos datos vendrían de un CSV o API de la CFTC
+    cot_trend_db = {
+        'USD (Dólar Index)': [22000, 24500, 21000, 28000, 31000, 29500, 33000, 35000, 32000, 36000],
+        'EUR (Euro)': [140000, 135000, 120000, 115000, 110000, 105000, 98000, 90000, 85000, 82000],
+        'GBP (Libra)': [-35000, -38000, -42000, -45000, -40000, -35000, -30000, -25000, -22000, -18000],
+        'JPY (Yen)': [-110000, -115000, -120000, -125000, -130000, -135000, -140000, -145000, -142000, -148000],
+        'BTC (Bitcoin)': [4200, 4800, 5100, 5500, 6200, 7000, 7800, 8200, 8500, 9100],
+        'GC=F (Oro)': [180000, 185000, 192000, 200000, 215000, 210000, 225000, 230000, 235000, 242000]
+    }
+
+    selected_asset = st.selectbox("Seleccionar Activo Institucional:", list(cot_trend_db.keys()))
+    
+    # Extraer datos del activo seleccionado
+    hist_data = cot_trend_db[selected_asset]
+    net_actual = hist_data[-1]
+    net_prev = hist_data[-2]
+    cambio = net_actual - net_prev
+
+    # 2. Layout de Métricas Superiores
+    c1, c2, c3 = st.columns([1, 1, 2])
+    
+    with c1:
+        st.metric("Net Positioning Actual", f"{net_actual:+,}", delta=f"{cambio:+,} vs prev")
+    
+    with c2:
+        # Lógica de Bias Institucional
+        if net_actual > 50000: bias = "EXTREME BULLISH 🚀"
+        elif net_actual > 0: bias = "BULLISH 🟢"
+        elif net_actual < -50000: bias = "EXTREME BEARISH 📉"
+        else: bias = "BEARISH 🚨"
+        st.write(f"**Bias Institucional:** \n### {bias}")
+
+    with c3:
+        # Gráfico de Indicador de Sentimiento (Gauge)
+        fig_gauge = go.Figure(go.Indicator(
+            mode = "gauge+number",
+            value = net_actual,
+            domain = {'x': [0, 1], 'y': [0, 1]},
+            title = {'text': "Fuerza Neta (Contratos)"},
+            gauge = {
+                'axis': {'range': [min(hist_data)-10000, max(hist_data)+10000]},
+                'bar': {'color': "#00ffcc" if net_actual > 0 else "#ff4b4b"},
+                'steps': [
+                    {'range': [min(hist_data)-10000, 0], 'color': "#3d0000"},
+                    {'range': [0, max(hist_data)+10000], 'color': "#002b2b"}
+                ]
+            }
+        ))
+        st.plotly_chart(fig_gauge.update_layout(height=250, margin=dict(t=50, b=0), template="plotly_dark"), use_container_width=True)
+
+    # 3. Gráfico de Tendencia de 10 Semanas
+    st.markdown("### 📈 Evolución del Posicionamiento (Últimas 10 Semanas)")
+    
+    fig_trend = go.Figure()
+    
+    # Añadimos la línea de tendencia
+    fig_trend.add_trace(go.Scatter(
+        x=[f"W-{i}" for i in range(10, 0, -1)], 
+        y=hist_data,
+        mode='lines+markers',
+        name='Net Position',
+        line=dict(color='#00ffcc' if net_actual > 0 else '#ff4b4b', width=3),
+        fill='tozeroy',
+        fillcolor='rgba(0, 255, 204, 0.1)' if net_actual > 0 else 'rgba(255, 75, 75, 0.1)'
+    ))
+
+    # Línea de equilibrio (cero)
+    fig_trend.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.5)
+
+    fig_trend.update_layout(
+        template="plotly_dark",
+        height=350,
+        margin=dict(l=20, r=20, t=20, b=20),
+        xaxis_title="Semanas Atrás",
+        yaxis_title="Contratos Netos",
+        hovermode="x unified"
+    )
+    
+    st.plotly_chart(fig_trend, use_container_width=True)
+
+    # 4. Interpretación Smart Money
+    st.markdown("""
+    <div style="background-color:#1c1c1c; padding:15px; border-radius:10px; border:1px solid #ffd700;">
+        <b>💡 Análisis de Flujo:</b> Si el gráfico muestra una pendiente ascendente mientras el precio baja, estamos ante una 
+        <b>Divergencia Institucional</b>. El Smart Money está acumulando contratos antes del giro del mercado.
+    </div>
+    """, unsafe_allow_html=True)
