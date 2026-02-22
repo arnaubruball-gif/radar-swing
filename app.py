@@ -351,7 +351,3 @@ with tab5:
         st.error("No se pudieron cargar los datos de la CFTC. Verifica la conexión o el formato del servidor.")
         # Datos de respaldo por si falla la web del gobierno
         st.info("Intentando reconexión automática en el próximo refresco...")
-
-    st.caption("Los datos se actualizan automáticamente cada viernes noche (retraso de
- 
-    
