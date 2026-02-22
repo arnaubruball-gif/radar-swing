@@ -14,12 +14,8 @@ st.markdown("""
     <style>
     .main { background-color: #000000; }
     .stMetric { background-color: #1e2130; padding: 15px; border-radius: 10px; border: 1px solid #3d4463; }
-    .tp-card { background-color: #161b22; padding: 20px; border-radius: 10px; border-top: 4px solid #00ffcc; text-align: center; margin-bottom:10px; }
-    .sl-card { background-color: #161b22; padding: 20px; border-radius: 10px; border-top: 4px solid #ff4b4b; text-align: center; }
     .bank-card { background-color: #0e1117; padding: 10px; border-left: 5px solid #ffd700; margin-bottom: 5px; font-size: 0.85rem; }
-    .risk-banner { padding: 20px; border-radius: 10px; text-align: center; font-weight: bold; font-size: 1.5rem; margin-top: 10px; color: black; }
-    .cot-card { background-color: #1c1c1c; padding: 15px; border-radius: 10px; border: 1px solid #ffd700; }
-    .trigger-card { background-color: #12141d; padding: 15px; border-radius: 10px; border: 1px solid #30363d; margin-top: 10px; }
+    .metric-box { background-color: #0e1117; padding: 15px; border-radius: 8px; border: 1px solid #30363d; text-align: center; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -37,6 +33,7 @@ def analyze_asset(ticker):
         df = yf.download(ticker, period='150d', interval='1d', progress=False)
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        
         df['Ret'] = df['Close'].pct_change()
         df['Vol_Proxy'] = (df['High'] - df['Low']) * 100000
         df['RMF'] = df['Close'] * df['Vol_Proxy']
@@ -48,16 +45,18 @@ def analyze_asset(ticker):
             subset = df.iloc[i-30:i].dropna()
             r2 = sm.OLS(subset['Ret'], sm.add_constant(subset['RMF'])).fit().rsquared
             r2_series.append(r2)
+        
         df['R2_Dynamic'] = r2_series
         diff = df['Ret'].rolling(40).sum() - df['RMF'].pct_change().rolling(40).sum()
-        z_val = ((diff - diff.rolling(40).mean()) / (diff.rolling(40).std() + 1e-10)).iloc[-1]
+        z_series = (diff - diff.rolling(40).mean()) / (diff.rolling(40).std() + 1e-10)
+        z_val = z_series.iloc[-1]
+        
         hurst = calcular_hurst(df['Close'].tail(50).values.flatten())
-        ema_21 = df['Close'].ewm(span=21, adjust=False).mean().iloc[-1]
         
         return {
             'df': df, 'price': float(df['Close'].iloc[-1]), 'z': z_val, 
-            'r2': df['R2_Dynamic'].iloc[-1], 'hurst': hurst, 'ema': float(ema_21), 
-            'vol': df['Ret'].tail(30).std(), 'rvol': df['RVOL'].iloc[-1]
+            'z_series': z_series, 'r2': df['R2_Dynamic'].iloc[-1], 
+            'hurst': hurst, 'vol': df['Ret'].tail(30).std(), 'rvol': df['RVOL'].iloc[-1]
         }
     except: return None
 
@@ -65,9 +64,8 @@ def analyze_asset(ticker):
 ASSETS = ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDJPY=X', 'USDCHF=X', 'GC=F', 'BTC-USD', '^GSPC']
 
 # --- 4. PESTAÑAS ---
-tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs([
-    "📊 ADN", "🎯 Ejecución Pro", "🎲 Montecarlo", "🛡️ Sentinel", 
-    "🌊 Vol-Monitor", "🏦 Banks Detector", "🏛️ COT Insight", "💰 RIESGO"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📊 ADN", "🎯 Ejecución Pro", "🎲 Montecarlo", "🌊 Vol-Monitor Pro", "🏦 Banks Detector", "🏛️ COT Insight"
 ])
 
 with tab1:
@@ -84,256 +82,87 @@ with tab2:
     st.subheader("🎯 Auditoría de Señales Recientes")
     target_e = st.selectbox("Analizar historial de:", ASSETS, key="exec_s")
     de = analyze_asset(target_e)
-    
     if de:
-        df_h = de['df'].tail(5).copy() # Miramos los últimos 5 días
-        
-        # Calculamos los estados de los últimos días
-        # Necesitamos recalcular el Z-diff histórico para la tabla
-        diff_hist = de['df']['Ret'].rolling(40).sum() - de['df']['RMF'].pct_change().rolling(40).sum()
-        z_hist = (diff_hist - diff_hist.rolling(40).mean()) / (diff_hist.rolling(40).std() + 1e-10)
-        
-        df_h['Z-Diff'] = z_hist.tail(5)
+        df_h = de['df'].tail(5).copy()
+        df_h['Z-Diff'] = de['z_series'].tail(5)
         df_h['ADN_Signal'] = df_h['Z-Diff'].apply(lambda x: "🟢 COMPRA" if x < -1.6 else ("🚨 VENTA" if x > 1.6 else "⚪ Neutral"))
-        
-        # Formateamos la tabla para que sea legible
         audit_df = df_h[['Close', 'Z-Diff', 'ADN_Signal']].copy()
         audit_df.index = audit_df.index.strftime('%Y-%m-%d')
-        audit_df['R2'] = de['df']['R2_Dynamic'].tail(5)
-        
-        st.write("### 📅 Registro de los últimos 5 días")
-        st.table(audit_df.style.format({'Close': '{:.5f}', 'Z-Diff': '{:.2f}', 'R2': '{:.3f}'}))
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            st.info("""
-            **Guía de Decisión Manual:**
-            1. **Acumulación:** ¿Lleva 2 o 3 días seguidos en 🟢 o 🚨? (Indica presión institucional sostenida).
-            2. **R2 Creciente:** Si el R2 sube mientras el ADN da señal, la probabilidad es mayor.
-            3. **Confirmación Visual:** Mira en el gráfico si el precio ha respetado la EMA21.
-            """)
-        
-        with c2:
-            # Añadimos un gráfico pequeño de la evolución del Z-Diff para ver la "curva"
-            fig_z = px.line(z_hist.tail(15), title="Evolución de Presión ADN (15d)")
-            fig_z.add_hline(y=1.6, line_dash="dash", line_color="red")
-            fig_z.add_hline(y=-1.6, line_dash="dash", line_color="green")
-            fig_z.update_layout(template="plotly_dark", height=250, showlegend=False)
-            st.plotly_chart(fig_z, use_container_width=True)
-
-        st.divider()
-        st.markdown("### 📏 Niveles de Referencia para hoy")
-        p, v = de['price'], de['vol']
-        sl_est = p * (1 - v*2.5) if de['z'] < 0 else p * (1 + v*2.5)
-        st.write(f"**Precio Actual:** {p:.5f} | **Stop Loss Sugerido (Estructural):** {sl_est:.5f}")
+        st.table(audit_df.style.format({'Close': '{:.5f}', 'Z-Diff': '{:.2f}'}))
+        fig_z = px.line(de['z_series'].tail(15), title="Evolución ADN (15d)")
+        fig_z.add_hline(y=1.6, line_dash="dash", line_color="red")
+        fig_z.add_hline(y=-1.6, line_dash="dash", line_color="green")
+        st.plotly_chart(fig_z.update_layout(template="plotly_dark", height=250), use_container_width=True)
 
 with tab3:
-    st.subheader("🎲 Simulación Montecarlo (Sesgo Institucional)")
+    st.subheader("🎲 Montecarlo (Sesgo Institucional)")
     target_m = st.selectbox("Analizar Probabilidades:", ASSETS, key="mc_s")
     dm = analyze_asset(target_m)
-    
     if dm:
         sims, dias = 1000, 30
-        # Simulamos retornos basados en la volatilidad histórica
         rets = np.random.normal(dm['df']['Ret'].mean(), dm['vol'], (sims, dias))
         caminos = dm['price'] * (1 + rets).cumprod(axis=1)
         
-        # Gráfico de Proyección
-        fig_m = go.Figure()
-        for i in range(15): 
-            fig_m.add_trace(go.Scatter(y=caminos[i], line=dict(width=1), opacity=0.3, showlegend=False))
-        
-        mediana = np.percentile(caminos, 50, axis=0)
-        fig_m.add_trace(go.Scatter(y=mediana, line=dict(color='#00ffcc', width=4), name="Mediana Proyectada"))
-        st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=400, title=f"Proyección 30d: {target_m}"), use_container_width=True)
-        
-        # --- NUEVA LÓGICA DE PROBABILIDAD DEFINIDA ---
         z_score = dm['z']
-        precio_actual = dm['price']
         precios_finales = caminos[:, -1]
         
-        # Determinamos la dirección según el ADN para no ser neutrales
-        if z_score <= 0: # Sesgo Alcista (ADN dice que está barato o recuperando)
-            exitos = (precios_finales > precio_actual).sum()
-            direccion_tesis = "ALCISTA 🟢"
-            color_prob = "#00ffcc"
-        else: # Sesgo Bajista (ADN dice que está caro o distribuyendo)
-            exitos = (precios_finales < precio_actual).sum()
-            direccion_tesis = "BAJISTA 🚨"
-            color_prob = "#ff4b4b"
-            
-        prob_exito = (exitos / sims) * 100
+        if z_score <= 0:
+            exitos = (precios_finales > dm['price']).sum()
+            tesis, color = "ALCISTA 🟢", "#00ffcc"
+        else:
+            exitos = (precios_finales < dm['price']).sum()
+            tesis, color = "BAJISTA 🚨", "#ff4b4b"
         
-        # Mostrar resultados con impacto visual
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f"""
-            <div style="background-color:#1e2130; padding:20px; border-radius:10px; border-left: 5px solid {color_prob};">
-                <small>Tesis Dominante ADN</small><br>
-                <b style="font-size:1.5rem; color:{color_prob};">{direccion_tesis}</b>
-            </div>
-            """, unsafe_allow_html=True)
+        prob = (exitos / sims) * 100
+        st.markdown(f'<div style="background-color:{color}; padding:15px; border-radius:10px; color:black; text-align:center;"><b>TESIS ADN: {tesis} | PROBABILIDAD ÉXITO: {prob:.1f}%</b></div>', unsafe_allow_html=True)
         
-        with c2:
-            st.metric(f"Probabilidad de éxito (Montecarlo + ADN)", f"{prob_exito:.1f}%", 
-                      delta=f"{'Favor favorable' if prob_exito > 50 else 'Baja confluencia'}")
-
-        st.caption(f"Nota: La probabilidad se calcula sobre 1000 iteraciones buscando que el precio final sea {'superior' if z_score <= 0 else 'inferior'} al actual en 30 días.")
+        fig_m = go.Figure()
+        for i in range(15): fig_m.add_trace(go.Scatter(y=caminos[i], line=dict(width=1), opacity=0.2, showlegend=False))
+        fig_m.add_trace(go.Scatter(y=np.percentile(caminos, 50, axis=0), line=dict(color=color, width=4), name="Mediana"))
+        st.plotly_chart(fig_m.update_layout(template="plotly_dark", height=350), use_container_width=True)
 
 with tab4:
-    st.subheader("🛡️ Sentinel Macro")
-    def get_safe_data(ticker):
-        try:
-            d = yf.download(ticker, period='30d', progress=False)['Close'].ffill()
-            return d.iloc[:, 0] if isinstance(d, pd.DataFrame) else d
-        except: return pd.Series()
-    sp_df, vix_df, dxy_df = get_safe_data('^GSPC'), get_safe_data('^VIX'), get_safe_data('DX-Y.NYB')
-    if not sp_df.empty and not vix_df.empty:
-        m1, m2, m3 = st.columns(3)
-        m1.metric("S&P 500", f"{sp_df.iloc[-1]:.2f}")
-        m2.metric("VIX Index", f"{vix_df.iloc[-1]:.2f}")
-        m3.metric("DXY Index", f"{dxy_df.iloc[-1]:.2f}")
-        fig_s = go.Figure()
-        fig_s.add_trace(go.Scatter(x=sp_df.index, y=sp_df, name="S&P 500", yaxis="y1", line=dict(color='#00ffcc')))
-        fig_s.add_trace(go.Scatter(x=vix_df.index, y=vix_df, name="VIX", yaxis="y2", line=dict(color='#ff4b4b', dash='dot')))
-        fig_s.update_layout(template="plotly_dark", yaxis=dict(side="left"), yaxis2=dict(overlaying="y", side="right"), height=400)
-        st.plotly_chart(fig_s, use_container_width=True)
-        score = sum([vix_df.iloc[-1] > 20, dxy_df.iloc[-1] > 104.5, sp_df.pct_change(5).iloc[-1] < -0.02])
-        clrs = ["#00ffcc", "#ffd700", "#ff8c00", "#ff4b4b"]; lbls = ["ESTABLE", "PRECAUCIÓN", "RIESGO", "PÁNICO"]
-        st.markdown(f'<div class="risk-banner" style="background-color:{clrs[min(score, 3)]};">ESTADO MACRO: {lbls[min(score, 3)]}</div>', unsafe_allow_html=True)
-
-with tab5:
-    st.subheader("🌊 Vol-Monitor Pro: Confluencia de Fuerza")
+    st.subheader("🌊 Vol-Monitor Pro: Veredicto de Fuerza")
     target_v = st.selectbox("Activo Detalle Fuerza:", ASSETS, key="v_s")
     dv = analyze_asset(target_v)
-    
     if dv:
-        # 1. Cálculo de Indicadores Extra (dentro del tab para asegurar que existen)
         df_v = dv['df']
-        
-        # Kaufman Efficiency Ratio (ER) - Ventana de 10 días
+        # Kaufman ER
         n_er = 10
         change = abs(df_v['Close'] - df_v['Close'].shift(n_er))
-        volatility = abs(df_v['Close'] - df_v['Close'].shift(1)).rolling(n_er).sum()
-        er_val = (change / (volatility + 1e-10)).iloc[-1]
-        
-        # ADX Básico (Fuerza de tendencia)
+        volat = abs(df_v['Close'] - df_v['Close'].shift(1)).rolling(n_er).sum()
+        er = (change / (volat + 1e-10)).iloc[-1]
+        # ADX Básico
         plus_dm = df_v['High'].diff()
         minus_dm = df_v['Low'].diff()
-        tr = pd.concat([df_v['High']-df_v['Low'], 
-                        abs(df_v['High']-df_v['Close'].shift(1)), 
-                        abs(df_v['Low']-df_v['Close'].shift(1))], axis=1).max(axis=1)
-        atr_14 = tr.rolling(14).mean()
-        plus_di = 100 * (plus_dm.rolling(14).mean() / (atr_14 + 1e-10))
-        minus_di = 100 * (minus_dm.rolling(14).mean() / (atr_14 + 1e-10))
-        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
-        adx_val = dx.rolling(14).mean().iloc[-1]
+        tr = pd.concat([df_v['High']-df_v['Low'], abs(df_v['High']-df_v['Close'].shift(1)), abs(df_v['Low']-df_v['Close'].shift(1))], axis=1).max(axis=1)
+        atr = tr.rolling(14).mean()
+        dx = 100 * abs((plus_dm.rolling(14).mean() - minus_dm.rolling(14).mean()) / (plus_dm.rolling(14).mean() + minus_dm.rolling(14).mean() + 1e-10))
+        adx = dx.rolling(14).mean().iloc[-1]
         
-        # ROC (Rate of Change - Velocidad 10 días)
-        roc_val = ((df_v['Close'].iloc[-1] - df_v['Close'].iloc[-11]) / df_v['Close'].iloc[-11]) * 100
-
-        # 2. Visualización de Métricas
         m1, m2, m3, m4 = st.columns(4)
-        with m1:
-            st.markdown(f'<div class="metric-box"><b>RVOL (Interés)</b><br><h2>{dv["rvol"]:.2f}x</h2></div>', unsafe_allow_html=True)
-        with m2:
-            color_er = "#00ffcc" if er_val > 0.55 else "#ff4b4b"
-            st.markdown(f'<div class="metric-box"><b>Eficiencia (ER)</b><br><h2 style="color:{color_er};">{er_val:.2f}</h2></div>', unsafe_allow_html=True)
-        with m3:
-            color_adx = "#ffd700" if adx_val > 25 else "#8b949e"
-            st.markdown(f'<div class="metric-box"><b>Tendencia (ADX)</b><br><h2 style="color:{color_adx};">{adx_val:.1f}</h2></div>', unsafe_allow_html=True)
-        with m4:
-            st.markdown(f'<div class="metric-box"><b>Velocidad (ROC)</b><br><h2>{roc_val:+.2f}%</h2></div>', unsafe_allow_html=True)
-
-        # 3. Lógica del Veredicto
-        st.write("---")
-        puntos = 0
-        if dv['rvol'] > 1.5: puntos += 1
-        if er_val > 0.55: puntos += 1
-        if adx_val > 25: puntos += 1
-        if abs(roc_val) > 0.7: puntos += 1
-
-        if puntos >= 3:
-            v_color, v_text = "#00ffcc", "🚀 ALTA CALIDAD: Movimiento Institucional"
-            v_desc = "El volumen y la eficiencia confirman que el Smart Money tiene el control."
-        elif puntos == 2:
-            v_color, v_text = "#ffd700", "⚠️ CALIDAD MEDIA: Fuerza en desarrollo"
-            v_desc = "Hay interés, pero el movimiento aún tiene ruido o falta de tendencia clara."
-        else:
-            v_color, v_text = "#ff4b4b", "🚫 RUIDO ESTRUCTURAL: Evitar operativa"
-            v_desc = "Baja eficiencia o falta de volumen. El ADN puede dar señal, pero no hay 'gasolina'."
-
-        st.markdown(f"""
-        <div style="background-color:{v_color}; padding:20px; border-radius:10px; color:black; text-align:center;">
-            <h2 style="margin:0;">{v_text}</h2>
-            <p style="margin:5px 0 0 0; font-weight:bold;">{v_desc}</p>
-        </div>
-        """, unsafe_allow_html=True)
+        m1.markdown(f'<div class="metric-box"><b>RVOL</b><br><h2>{dv["rvol"]:.2f}x</h2></div>', unsafe_allow_html=True)
+        m2.markdown(f'<div class="metric-box"><b>ER (Eficiencia)</b><br><h2>{er:.2f}</h2></div>', unsafe_allow_html=True)
+        m3.markdown(f'<div class="metric-box"><b>ADX (Fuerza)</b><br><h2>{adx:.1f}</h2></div>', unsafe_allow_html=True)
+        m4.markdown(f'<div class="metric-box"><b>ROC</b><br><h2>{df_v["Ret"].iloc[-1]*100:+.2f}%</h2></div>', unsafe_allow_html=True)
         
-        # 4. Gráfico de Soporte
-        fig_vol = go.Figure()
-        fig_vol.add_trace(go.Scatter(x=df_v.index[-30:], y=df_v['Close'].tail(30), name="Precio", yaxis="y2"))
-        fig_vol.add_trace(go.Bar(x=df_v.index[-30:], y=df_v['RVOL'].tail(30), name="RVOL", opacity=0.3, marker_color="#ffd700"))
-        fig_vol.update_layout(template="plotly_dark", height=300, yaxis2=dict(overlaying="y", side="right"), showlegend=False)
-        st.plotly_chart(fig_vol, use_container_width=True)
+        puntos = sum([dv['rvol'] > 1.5, er > 0.55, adx > 25, abs(df_v['Ret'].iloc[-1]*100) > 0.5])
+        v_color = "#00ffcc" if puntos >= 3 else "#ffd700" if puntos == 2 else "#ff4b4b"
+        st.markdown(f'<div style="background-color:{v_color}; padding:20px; border-radius:10px; color:black; text-align:center; font-weight:bold; margin-top:15px;">VEREDICTO: {"ALTA CALIDAD" if puntos >= 3 else "CALIDAD MEDIA" if puntos == 2 else "RUIDO ESTRUCTURAL"} ({puntos}/4)</div>', unsafe_allow_html=True)
+
+with tab5:
+    st.subheader("🏦 Banks Detector")
+    target_b = st.selectbox("Shadow RMF:", ASSETS, key="b_s")
+    db = analyze_asset(target_b)
+    if db:
+        df_b = db['df'].copy()
+        df_b['Anom'] = df_b['RMF'].abs() / df_b['RMF'].abs().rolling(20).mean()
+        clrs = ['#ffd700' if x > 2.5 else '#3d4463' for x in df_b['Anom']]
+        st.plotly_chart(go.Figure(data=[go.Bar(x=df_b.index, y=df_b['RMF'].abs(), marker_color=clrs)]).update_layout(template="plotly_dark", height=400), use_container_width=True)
 
 with tab6:
-    st.subheader("🏦 Banks Detector")
-    col_b1, col_b2 = st.columns([2, 1])
-    with col_b1:
-        target_b = st.selectbox("Shadow RMF:", ASSETS, key="b_s")
-        db = analyze_asset(target_b)
-        if db:
-            df_b = db['df'].copy()
-            df_b['Anom'] = df_b['RMF'].abs() / df_b['RMF'].abs().rolling(20).mean()
-            clrs = ['#ffd700' if x > 2.5 else '#3d4463' for x in df_b['Anom']]
-            st.plotly_chart(go.Figure(data=[go.Bar(x=df_b.index, y=df_b['RMF'].abs(), marker_color=clrs)]).update_layout(template="plotly_dark"), use_container_width=True)
-    with col_b2:
-        st.write("**Global Yield Spreads (10Y)**")
-        yields = {'EUR/USD': -1.85, 'GBP/USD': -0.15, 'CAD/USD': -0.75, 'AUD/USD': 0.15, 'JPY/USD': -3.40, 'CHF/USD': -2.10}
-        for pair, val in yields.items():
-            color = "#00ffcc" if val > -1.0 else "#ff4b4b"
-            st.markdown(f'<div class="bank-card">{pair} Spread: <span style="color:{color}">{val:+.2f}%</span></div>', unsafe_allow_html=True)
-
-with tab7:
-    st.subheader("🏛️ COT Insight: Asset Managers Sentiment")
-    cot_db = {
-        'USD (Dólar Index)': {'long': 45000, 'short': 12000, 'prev_net': 28000, 'bias': 'Bullish'},
-        'EUR (Euro)': {'long': 210500, 'short': 85000, 'prev_net': 110000, 'bias': 'Extreme Bullish'},
-        'GBP (Libra)': {'long': 42000, 'short': 98000, 'prev_net': -45000, 'bias': 'Bearish'},
-        'JPY (Yen)': {'long': 12000, 'short': 145000, 'prev_net': -120000, 'bias': 'Extreme Bearish'},
-        'AUD (Australiano)': {'long': 65000, 'short': 32000, 'prev_net': 28000, 'bias': 'Bullish'},
-        'CAD (Canadiense)': {'long': 25000, 'short': 45000, 'prev_net': -15000, 'bias': 'Neutral-Bearish'},
-        'BTC (Bitcoin)': {'long': 15400, 'short': 8200, 'prev_net': 5000, 'bias': 'Bullish'}
-    }
-    selected_curr = st.selectbox("Seleccionar Divisa:", list(cot_db.keys()))
-    data_c = cot_db[selected_curr]
-    total = data_c['long'] + data_c['short']
-    net_actual = data_c['long'] - data_c['short']
-    cambio_neto = net_actual - data_c['prev_net']
-    pct_long = (data_c['long'] / total) * 100
-    pct_short = (data_c['short'] / total) * 100
-    col_c1, col_c2, col_c3 = st.columns([1, 1, 1])
-    with col_c1: st.metric("Posición Neta", f"{net_actual:+,}", delta=f"{cambio_neto:+,}")
-    with col_c2: st.metric("Dominio Long", f"{pct_long:.1f}%", delta=f"{data_c['bias']}")
-    with col_c3:
-        fig_sent = go.Figure(go.Bar(x=[pct_long, pct_short], y=['L', 'S'], orientation='h', marker_color=['#00ffcc', '#ff4b4b']))
-        st.plotly_chart(fig_sent.update_layout(template="plotly_dark", height=150, margin=dict(l=0,r=0,t=0,b=0)), use_container_width=True)
-
-with tab8:
-    st.subheader("💰 Gestión de Riesgo Swing")
-    capital = st.number_input("Capital Cuenta ($):", value=10000)
-    riesgo_p = st.slider("Riesgo por trade (%):", 0.1, 2.0, 1.0)
-    target_r = st.selectbox("Activo:", ASSETS, key="risk_sel")
-    dr = analyze_asset(target_r)
-    if dr:
-        r_usd = capital * (riesgo_p/100)
-        p, v = dr['price'], dr['vol']
-        sl_dist = p * (v*2.5)
-        st.markdown(f"""
-        <div style="background-color:#1e2130; padding:20px; border-radius:10px;">
-        <h3>Calculadora Estructural</h3>
-        Pérdida máxima: <b>${r_usd:.2f}</b><br>
-        Lotaje sugerido: <b>{(r_usd/sl_dist if 'USD' in target_r else 0.1):.2f}</b>
-        </div>
-        """, unsafe_allow_html=True)
+    st.subheader("🏛️ COT Insight")
+    cot_db = {'USD (Dólar Index)': {'long': 45000, 'short': 12000, 'bias': 'Bullish'}, 'EUR (Euro)': {'long': 210500, 'short': 85000, 'bias': 'Extreme Bullish'}, 'BTC (Bitcoin)': {'long': 15400, 'short': 8200, 'bias': 'Bullish'}}
+    sel_c = st.selectbox("Divisa:", list(cot_db.keys()))
+    d_c = cot_db[sel_c]
+    st.metric("Sesgo", d_c['bias'], f"{d_c['long'] - d_c['short']} Net")
