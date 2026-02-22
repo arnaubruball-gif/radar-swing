@@ -203,18 +203,79 @@ with tab4:
         st.markdown(f'<div class="risk-banner" style="background-color:{clrs[min(score, 3)]};">ESTADO MACRO: {lbls[min(score, 3)]}</div>', unsafe_allow_html=True)
 
 with tab5:
-    st.subheader("🌊 Vol-Monitor & Relative Volume")
-    target_v = st.selectbox("Activo Detalle:", ASSETS, key="v_s")
+    st.subheader("🌊 Vol-Monitor Pro: Confluencia de Fuerza")
+    target_v = st.selectbox("Activo Detalle Fuerza:", ASSETS, key="v_s")
     dv = analyze_asset(target_v)
+    
     if dv:
-        col_v1, col_v2 = st.columns([2, 1])
-        with col_v1:
-            fig_h = px.histogram(dv['df'], x="Ret", nbins=50, title="Distribución de Riesgo")
-            fig_h.add_vline(x=dv['df']['Ret'].iloc[-1], line_color="red", line_width=4)
-            st.plotly_chart(fig_h.update_layout(template="plotly_dark"), use_container_width=True)
-        with col_v2:
-            rvol_val = dv['rvol']
-            st.metric("Volumen Relativo (RVOL)", f"{rvol_val:.2f}x", delta=f"{rvol_val-1:.2f} vs media")
+        # 1. Cálculo de Indicadores Extra (dentro del tab para asegurar que existen)
+        df_v = dv['df']
+        
+        # Kaufman Efficiency Ratio (ER) - Ventana de 10 días
+        n_er = 10
+        change = abs(df_v['Close'] - df_v['Close'].shift(n_er))
+        volatility = abs(df_v['Close'] - df_v['Close'].shift(1)).rolling(n_er).sum()
+        er_val = (change / (volatility + 1e-10)).iloc[-1]
+        
+        # ADX Básico (Fuerza de tendencia)
+        plus_dm = df_v['High'].diff()
+        minus_dm = df_v['Low'].diff()
+        tr = pd.concat([df_v['High']-df_v['Low'], 
+                        abs(df_v['High']-df_v['Close'].shift(1)), 
+                        abs(df_v['Low']-df_v['Close'].shift(1))], axis=1).max(axis=1)
+        atr_14 = tr.rolling(14).mean()
+        plus_di = 100 * (plus_dm.rolling(14).mean() / (atr_14 + 1e-10))
+        minus_di = 100 * (minus_dm.rolling(14).mean() / (atr_14 + 1e-10))
+        dx = 100 * abs(plus_di - minus_di) / (plus_di + minus_di + 1e-10)
+        adx_val = dx.rolling(14).mean().iloc[-1]
+        
+        # ROC (Rate of Change - Velocidad 10 días)
+        roc_val = ((df_v['Close'].iloc[-1] - df_v['Close'].iloc[-11]) / df_v['Close'].iloc[-11]) * 100
+
+        # 2. Visualización de Métricas
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.markdown(f'<div class="metric-box"><b>RVOL (Interés)</b><br><h2>{dv["rvol"]:.2f}x</h2></div>', unsafe_allow_html=True)
+        with m2:
+            color_er = "#00ffcc" if er_val > 0.55 else "#ff4b4b"
+            st.markdown(f'<div class="metric-box"><b>Eficiencia (ER)</b><br><h2 style="color:{color_er};">{er_val:.2f}</h2></div>', unsafe_allow_html=True)
+        with m3:
+            color_adx = "#ffd700" if adx_val > 25 else "#8b949e"
+            st.markdown(f'<div class="metric-box"><b>Tendencia (ADX)</b><br><h2 style="color:{color_adx};">{adx_val:.1f}</h2></div>', unsafe_allow_html=True)
+        with m4:
+            st.markdown(f'<div class="metric-box"><b>Velocidad (ROC)</b><br><h2>{roc_val:+.2f}%</h2></div>', unsafe_allow_html=True)
+
+        # 3. Lógica del Veredicto
+        st.write("---")
+        puntos = 0
+        if dv['rvol'] > 1.5: puntos += 1
+        if er_val > 0.55: puntos += 1
+        if adx_val > 25: puntos += 1
+        if abs(roc_val) > 0.7: puntos += 1
+
+        if puntos >= 3:
+            v_color, v_text = "#00ffcc", "🚀 ALTA CALIDAD: Movimiento Institucional"
+            v_desc = "El volumen y la eficiencia confirman que el Smart Money tiene el control."
+        elif puntos == 2:
+            v_color, v_text = "#ffd700", "⚠️ CALIDAD MEDIA: Fuerza en desarrollo"
+            v_desc = "Hay interés, pero el movimiento aún tiene ruido o falta de tendencia clara."
+        else:
+            v_color, v_text = "#ff4b4b", "🚫 RUIDO ESTRUCTURAL: Evitar operativa"
+            v_desc = "Baja eficiencia o falta de volumen. El ADN puede dar señal, pero no hay 'gasolina'."
+
+        st.markdown(f"""
+        <div style="background-color:{v_color}; padding:20px; border-radius:10px; color:black; text-align:center;">
+            <h2 style="margin:0;">{v_text}</h2>
+            <p style="margin:5px 0 0 0; font-weight:bold;">{v_desc}</p>
+        </div>
+        """, unsafe_allow_html=True)
+        
+        # 4. Gráfico de Soporte
+        fig_vol = go.Figure()
+        fig_vol.add_trace(go.Scatter(x=df_v.index[-30:], y=df_v['Close'].tail(30), name="Precio", yaxis="y2"))
+        fig_vol.add_trace(go.Bar(x=df_v.index[-30:], y=df_v['RVOL'].tail(30), name="RVOL", opacity=0.3, marker_color="#ffd700"))
+        fig_vol.update_layout(template="plotly_dark", height=300, yaxis2=dict(overlaying="y", side="right"), showlegend=False)
+        st.plotly_chart(fig_vol, use_container_width=True)
 
 with tab6:
     st.subheader("🏦 Banks Detector")
