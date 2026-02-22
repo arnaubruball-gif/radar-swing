@@ -65,7 +65,7 @@ ASSETS = ['EURUSD=X', 'GBPUSD=X', 'AUDUSD=X', 'USDCAD=X', 'USDJPY=X', 'USDCHF=X'
 
 # --- 4. PESTAÑAS ---
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "📊 ADN", "🎯 Ejecución Pro", "🎲 Montecarlo", "🌊 Vol-Monitor Pro", "🏦 Banks Detector", "🏛️ COT Insight"
+    "📊 ANALISIS", "🎯 HISTORIAL", "🎲 MONTECARLO", "🌊 VOLUMEN", "🏦 Banks Detector", "🏛️ COT"
 ])
 
 with tab1:
