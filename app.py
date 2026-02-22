@@ -79,20 +79,58 @@ with tab1:
         st.dataframe(pd.DataFrame(results, columns=['Activo', 'Precio', 'R2', 'Z-Diff', 'Hurst', 'Veredicto']), use_container_width=True)
 
 with tab2:
-    st.subheader("🎯 Auditoría de Señales Recientes")
+    st.subheader("🎯 Auditoría de Precisión (Basada en Precio Medio)")
     target_e = st.selectbox("Analizar historial de:", ASSETS, key="exec_s")
     de = analyze_asset(target_e)
+    
     if de:
-        df_h = de['df'].tail(5).copy()
-        df_h['Z-Diff'] = de['z_series'].tail(5)
+        df_h = de['df'].tail(7).copy() # Ampliamos a 7 días para ver mejor el contexto
+        
+        # 1. Calculamos el Precio Medio (Typical Price) para evitar el sesgo del Close
+        df_h['Avg_Price'] = (df_h['High'] + df_h['Low'] + df_h['Close']) / 3
+        
+        # 2. Calculamos la oscilación real (Intraday Range)
+        df_h['Range_Pct'] = ((df_h['High'] - df_h['Low']) / df_h['Low']) * 100
+        
+        # 3. Traemos el Z-Diff histórico
+        df_h['Z-Diff'] = de['z_series'].tail(7)
         df_h['ADN_Signal'] = df_h['Z-Diff'].apply(lambda x: "🟢 COMPRA" if x < -1.6 else ("🚨 VENTA" if x > 1.6 else "⚪ Neutral"))
-        audit_df = df_h[['Close', 'Z-Diff', 'ADN_Signal']].copy()
+        
+        # 4. Formateo de la tabla de Auditoría
+        audit_df = df_h[['Avg_Price', 'Close', 'Z-Diff', 'Range_Pct', 'ADN_Signal']].copy()
         audit_df.index = audit_df.index.strftime('%Y-%m-%d')
-        st.table(audit_df.style.format({'Close': '{:.5f}', 'Z-Diff': '{:.2f}'}))
-        fig_z = px.line(de['z_series'].tail(15), title="Evolución ADN (15d)")
-        fig_z.add_hline(y=1.6, line_dash="dash", line_color="red")
-        fig_z.add_hline(y=-1.6, line_dash="dash", line_color="green")
-        st.plotly_chart(fig_z.update_layout(template="plotly_dark", height=250), use_container_width=True)
+        
+        st.write("### 📅 Registro de Presión Real")
+        st.table(audit_df.style.format({
+            'Avg_Price': '{:.5f}', 
+            'Close': '{:.5f}', 
+            'Z-Diff': '{:.2f}', 
+            'Range_Pct': '{:.2f}%'
+        }).bar(subset=['Range_Pct'], color='#3d4463'))
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.info("""
+            **¿Por qué Precio Medio?**
+            El Close puede verse manipulado por liquidaciones de última hora. 
+            Si el **Avg_Price** es mucho menor que el **Close**, el mercado subió al final, 
+            pero la mayor parte del día la presión fue bajista.
+            """)
+        
+        with c2:
+            # Gráfico comparativo Close vs Avg
+            fig_comp = go.Figure()
+            fig_comp.add_trace(go.Scatter(x=df_h.index, y=df_h['Close'], name="Close", line=dict(color='gray', dash='dot')))
+            fig_comp.add_trace(go.Scatter(x=df_h.index, y=df_h['Avg_Price'], name="Precio Medio", line=dict(color='#00ffcc', width=3)))
+            fig_comp.update_layout(template="plotly_dark", height=250, title="Filtro de Ruido: Close vs Medio")
+            st.plotly_chart(fig_comp, use_container_width=True)
+
+        st.divider()
+        # Niveles ajustados al Precio Medio
+        avg_p = de['df']['Close'].tail(1).mean()
+        v = de['vol']
+        sl_est = avg_p * (1 - v*2.5) if de['z'] < 0 else avg_p * (1 + v*2.5)
+        st.write(f"**Referencia Media:** {avg_p:.5f} | **Stop Loss Sugerido:** {sl_est:.5f}")
 
 with tab3:
     st.subheader("🎲 Montecarlo (Sesgo Institucional)")
