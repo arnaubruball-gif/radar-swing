@@ -81,47 +81,51 @@ with tab1:
         st.dataframe(pd.DataFrame(results, columns=['Activo', 'Precio', 'R2', 'Z-Diff', 'Hurst', 'Veredicto']), use_container_width=True)
 
 with tab2:
-    st.subheader("🎯 Gatillo de Entrada Confirmada (3-Day Breakout)")
-    target_e = st.selectbox("Seleccionar Activo:", ASSETS, key="exec_s")
+    st.subheader("🎯 Auditoría de Señales Recientes")
+    target_e = st.selectbox("Analizar historial de:", ASSETS, key="exec_s")
     de = analyze_asset(target_e)
+    
     if de:
-        p, v, z, df_e = de['price'], de['vol'], de['z'], de['df']
+        df_h = de['df'].tail(5).copy() # Miramos los últimos 5 días
         
-        # Lógica de Gatillo: Máximo/Mínimo de 3 días previos (sin contar la vela actual)
-        h3 = df_e['High'].iloc[-4:-1].max()
-        l3 = df_e['Low'].iloc[-4:-1].min()
-        ema = de['ema']
+        # Calculamos los estados de los últimos días
+        # Necesitamos recalcular el Z-diff histórico para la tabla
+        diff_hist = de['df']['Ret'].rolling(40).sum() - de['df']['RMF'].pct_change().rolling(40).sum()
+        z_hist = (diff_hist - diff_hist.rolling(40).mean()) / (diff_hist.rolling(40).std() + 1e-10)
         
-        c1, c2 = st.columns([1.5, 1])
+        df_h['Z-Diff'] = z_hist.tail(5)
+        df_h['ADN_Signal'] = df_h['Z-Diff'].apply(lambda x: "🟢 COMPRA" if x < -1.6 else ("🚨 VENTA" if x > 1.6 else "⚪ Neutral"))
+        
+        # Formateamos la tabla para que sea legible
+        audit_df = df_h[['Close', 'Z-Diff', 'ADN_Signal']].copy()
+        audit_df.index = audit_df.index.strftime('%Y-%m-%d')
+        audit_df['R2'] = de['df']['R2_Dynamic'].tail(5)
+        
+        st.write("### 📅 Registro de los últimos 5 días")
+        st.table(audit_df.style.format({'Close': '{:.5f}', 'Z-Diff': '{:.2f}', 'R2': '{:.3f}'}))
+        
+        c1, c2 = st.columns(2)
         with c1:
-            st.markdown("### 🚦 Estado de Confirmación")
-            if z < -1.6: # ADN dice Compra
-                if p > h3 and p > ema:
-                    st.success(f"🔥 SEÑAL COMPLETA: El precio ha roto el máximo de 3 días ({h3:.5f}) y está sobre la EMA21. ¡DISPARAR COMPRA!")
-                else:
-                    st.warning(f"⏳ ESPERAR: ADN es alcista, pero el gatillo se activa al romper los {h3:.5f} con fuerza.")
-            elif z > 1.6: # ADN dice Venta
-                if p < l3 and p < ema:
-                    st.error(f"🔥 SEÑAL COMPLETA: El precio ha roto el mínimo de 3 días ({l3:.5f}) y está bajo la EMA21. ¡DISPARAR VENTA!")
-                else:
-                    st.warning(f"⏳ ESPERAR: ADN es bajista, pero el gatillo se activa al romper los {l3:.5f} a la baja.")
-            else:
-                st.info("⚪ NEUTRAL: El ADN no muestra ventaja estadística en este timeframe estructural.")
-            
-            # Gráfico de Gatillo
-            fig_t = go.Figure(data=[go.Candlestick(x=df_e.index[-20:], open=df_e['Open'], high=df_e['High'], low=df_e['Low'], close=df_e['Close'], name="Precio")])
-            fig_t.add_hline(y=h3, line_dash="dash", line_color="#00ffcc", annotation_text="Trigger High")
-            fig_t.add_hline(y=l3, line_dash="dash", line_color="#ff4b4b", annotation_text="Trigger Low")
-            st.plotly_chart(fig_t.update_layout(template="plotly_dark", height=300, showlegend=False, margin=dict(l=0,r=0,t=0,b=0)), use_container_width=True)
-
+            st.info("""
+            **Guía de Decisión Manual:**
+            1. **Acumulación:** ¿Lleva 2 o 3 días seguidos en 🟢 o 🚨? (Indica presión institucional sostenida).
+            2. **R2 Creciente:** Si el R2 sube mientras el ADN da señal, la probabilidad es mayor.
+            3. **Confirmación Visual:** Mira en el gráfico si el precio ha respetado la EMA21.
+            """)
+        
         with c2:
-            st.markdown("### 📐 Niveles de Salida")
-            sl = p * (1 + v*2.5) if z > 0 else p * (1 - v*2.5)
-            tp_w = p * (1 - v*np.sqrt(5)*1.5 if z > 0 else 1 + v*np.sqrt(5)*1.5)
-            
-            st.markdown(f'<div class="tp-card">Take Profit (Estructural): {tp_w:.5f}</div>', unsafe_allow_html=True)
-            st.markdown(f'<div class="sl-card">Stop Loss (2.5σ): {sl:.5f}</div>', unsafe_allow_html=True)
-            st.caption("Nota: El SL es más holgado (2.5σ) para evitar ser sacado por volatilidad diaria antes de que la tendencia se desarrolle.")
+            # Añadimos un gráfico pequeño de la evolución del Z-Diff para ver la "curva"
+            fig_z = px.line(z_hist.tail(15), title="Evolución de Presión ADN (15d)")
+            fig_z.add_hline(y=1.6, line_dash="dash", line_color="red")
+            fig_z.add_hline(y=-1.6, line_dash="dash", line_color="green")
+            fig_z.update_layout(template="plotly_dark", height=250, showlegend=False)
+            st.plotly_chart(fig_z, use_container_width=True)
+
+        st.divider()
+        st.markdown("### 📏 Niveles de Referencia para hoy")
+        p, v = de['price'], de['vol']
+        sl_est = p * (1 - v*2.5) if de['z'] < 0 else p * (1 + v*2.5)
+        st.write(f"**Precio Actual:** {p:.5f} | **Stop Loss Sugerido (Estructural):** {sl_est:.5f}")
 
 with tab3:
     st.subheader("🎲 Simulación Montecarlo (Proyección 30 días)")
