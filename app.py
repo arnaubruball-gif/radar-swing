@@ -183,28 +183,52 @@ with tab6:
 
 with tab7:
     st.subheader("⚖️ BEER Model (Forex Equilibrium Pricing)")
-    pair = st.selectbox("Par para Valor Justo:", ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X'])
+    pair_beer = st.selectbox("Par para Valor Justo:", ['EURUSD=X', 'GBPUSD=X', 'USDJPY=X'], key="sb_beer")
     
-    # Diferenciales de bonos (Proxy BEER)
-    bond_base = '^GBSYSG' if 'EUR' in pair else '^GLY' if 'GBP' in pair else '^TNX'
-    bond_quote = '^TNX' if 'JPY' not in pair else '^GJYSG'
-    
-    b1 = yf.download(bond_base, period='60d', progress=False)['Close']
-    b2 = yf.download(bond_quote, period='60d', progress=False)['Close']
-    price = yf.download(pair, period='60d', progress=False)['Close']
-    
-    if not b1.empty and not b2.empty:
-        spread = b1 - b2
-        # Normalización para comparar peras con manzanas
-        spread_n = (spread - spread.mean()) / spread.std()
-        price_n = (price - price.mean()) / price.std()
-        desv = price_n.iloc[-1] - spread_n.iloc[-1]
+    # Usamos el diferencial de tipos basado en el TNX (10Y USA) 
+    # y el precio para ver la divergencia de corto plazo
+    try:
+        # Descargamos datos con un periodo mayor para asegurar la normalización
+        bond_ref = yf.download('^TNX', period='100d', interval='1d', progress=False)['Close']
+        price_ref = yf.download(pair_beer, period='100d', interval='1d', progress=False)['Close']
         
-        st.metric("Desviación del Valor Justo", f"{desv:.2f}", 
-                  delta="Sobrevalorado" if desv > 0.5 else "Infravalorado" if desv < -0.5 else "En Equilibrio")
-        
-        fig_p = go.Figure()
-        fig_p.add_trace(go.Scatter(x=price_n.index, y=price_n, name="Precio (Norm)", line=dict(color='#00ffcc')))
-        fig_p.add_trace(go.Scatter(x=spread_n.index, y=spread_n, name="BEER (Bond Spread)", line=dict(color='#ffd700', dash='dot')))
-        st.plotly_chart(fig_p.update_layout(template="plotly_dark", height=400), use_container_width=True)
-        st.info("💡 Si el precio (cian) está muy lejos del bono (dorado), el Smart Money espera una reversión al valor justo.")
+        if not bond_ref.empty and not price_ref.empty:
+            # Sincronizamos los datos por si hay días festivos
+            df_beer = pd.concat([bond_ref, price_ref], axis=1).dropna()
+            df_beer.columns = ['Bond', 'Price']
+            
+            # NORMALIZACIÓN Z-SCORE (Para poder comparar peras con manzanas)
+            df_beer['Bond_N'] = (df_beer['Bond'] - df_beer['Bond'].rolling(20).mean()) / df_beer['Bond'].rolling(20).std()
+            df_beer['Price_N'] = (df_beer['Price'] - df_beer['Price'].rolling(20).mean()) / df_beer['Price'].rolling(20).std()
+            
+            # La Desviación BEER es la brecha entre el precio y el bono
+            # Si el precio sube pero el bono baja -> Divergencia (Sobrevalorado)
+            actual_desv = df_beer['Price_N'].iloc[-1] - df_beer['Bond_N'].iloc[-1]
+            
+            c1, c2 = st.columns(2)
+            with c1:
+                st.metric("Desviación BEER", f"{actual_desv:.2f}", 
+                          delta="⚠️ SOBREVALORADO" if actual_desv > 1.2 else "🟢 INFRAVALORADO" if actual_desv < -1.2 else "⚖️ VALOR JUSTO")
+            
+            with c2:
+                st.write("**Lectura Rápida:**")
+                if abs(actual_desv) > 1.2:
+                    st.warning("🚨 El precio se ha desconectado del rendimiento del bono. Busca una reversión.")
+                else:
+                    st.success("✅ El precio fluye en armonía con los tipos de interés.")
+
+            # Gráfico de Convergencia
+            fig_p = go.Figure()
+            fig_p.add_trace(go.Scatter(x=df_beer.index, y=df_beer['Price_N'], name="Precio (Normalizado)", line=dict(color='#00ffcc', width=3)))
+            fig_p.add_trace(go.Scatter(x=df_beer.index, y=df_beer['Bond_N'], name="Rendimiento Bono (Normalizado)", line=dict(color='#ffd700', dash='dot')))
+            
+            fig_p.update_layout(
+                template="plotly_dark", 
+                height=400, 
+                margin=dict(l=10, r=10, t=30, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+            )
+            st.plotly_chart(fig_p, use_container_width=True)
+            
+    except Exception as e:
+        st.error(f"Error al cargar datos de BEER: {e}")
