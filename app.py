@@ -1,3 +1,32 @@
+import streamlit as st
+import streamlit.components.v1 as components
+
+# 1. Configuración de la interfaz de Streamlit
+st.set_page_config(
+    page_title="ORDER FLOW PRO",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# 2. Definición del código HTML (Aquí es donde "vive" tu herramienta)
+# Usamos comillas triples """ para que Python guarde todo como un bloque de texto
+html_template = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        :root{--bg:#04070d;--s0:#070c14;--s1:#0b111c;--b1:#162030;--b2:#1e2e42;--green:#00e676;--red:#ff1744;--yellow:#ffd600;--cyan:#00e5ff;--orange:#ff9100;--blue:#0090ff;--purple:#d500f9;--text:#cdd9e5;--muted:#4a6080;--mono:'JetBrains Mono',monospace;--display:'Rajdhani',sans-serif}
+        *{margin:0;padding:0;box-sizing:border-box}
+        body{background:var(--bg);color:var(--text);font-family:var(--mono);min-height:100vh;overflow-x:hidden}
+        /* ... El resto de tu CSS ... */
+    </style>
+</head>
+<body>
+    <div class="w">
+        </div>
+
+    <script>
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -817,3 +846,11 @@ fillDemo();
 </script>
 </body>
 </html>
+    </script>
+</body>
+</html>
+"""
+
+# 3. Ejecución del componente en Streamlit
+# Ajustamos el height a 2500 para evitar el doble scroll
+components.html(html_template, height=2500, scrolling=False)
