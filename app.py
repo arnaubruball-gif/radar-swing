@@ -5,7 +5,6 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
-import google.generativeai as genai
 import json
 import re
 
@@ -43,12 +42,30 @@ H4_EQ       = 4       # H4 candles per day — equity/index (~16h)
 
 # ─── MATH ─────────────────────────────────────────────────────────────────────
 def calc_order_flow(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
+    """
+    Z-Diff con volumen adaptativo.
+    Forex no tiene volumen centralizado en Yahoo → usa rango (H-L) como proxy,
+    igual que hacen la mayoría de plataformas para el Money Flow Index en FX.
+    """
     df = df.copy()
     df["tp"]      = (df["High"] + df["Low"] + df["Close"]) / 3
     df["tp_prev"] = df["tp"].shift(1)
-    df["raw_mf"]  = np.where(
-        df["tp"] > df["tp_prev"],  df["tp"] * df["Volume"],
-        np.where(df["tp"] < df["tp_prev"], -df["tp"] * df["Volume"], 0)
+
+    # Detectar si el volumen es útil
+    vol = df["Volume"].fillna(0)
+    vol_ok = (vol.sum() > 0) and (vol.nunique() > 3)
+
+    if vol_ok:
+        effective_vol = vol.replace(0, np.nan).ffill().fillna(1.0)
+    else:
+        # Proxy: rango normalizado × precio típico (refleja actividad sin volumen)
+        rng = (df["High"] - df["Low"])
+        mean_rng = rng.mean()
+        effective_vol = (rng / mean_rng * df["tp"].mean() * 10000).fillna(1.0)
+
+    df["raw_mf"] = np.where(
+        df["tp"] > df["tp_prev"],  df["tp"] * effective_vol,
+        np.where(df["tp"] < df["tp_prev"], -df["tp"] * effective_vol, 0)
     )
     df["rmf"]    = df["raw_mf"].rolling(window=period, min_periods=1).sum()
     mu           = df["rmf"].rolling(window=period, min_periods=2).mean()
@@ -95,78 +112,49 @@ def calc_lots(entry, sl, account, risk_pct, instr):
         label = f"{lots:.2f} contratos CFD"
     return lots, risk_usd, label
 
-# ─── GEMINI ───────────────────────────────────────────────────────────────────
-def gemini_search(prompt: str, api_key: str) -> str:
-    """Gemini 2.0 Flash con Google Search grounding — busca en internet."""
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
-        tools="google_search_retrieval",
-    )
-    return model.generate_content(prompt).text
-
-
-def gemini_plain(prompt: str, api_key: str) -> str:
-    """Gemini 2.0 Flash sin búsqueda — para análisis con datos ya provistos."""
-    genai.configure(api_key=api_key)
-    model = genai.GenerativeModel("gemini-2.0-flash")
-    return model.generate_content(prompt).text
-
-
-def get_market_context(ticker, asset_type, horizon, api_key) -> dict:
+# ─── PROMPTS PARA COPIAR/PEGAR EN IA GRATUITA ────────────────────────────────
+def build_context_prompt(ticker, asset_type, horizon) -> str:
     today = datetime.now().strftime("%A, %d de %B de %Y")
-    prompt = f"""Hoy es {today}. Eres un analista swing trader experto con acceso a internet.
+    return f"""Hoy es {today}. Eres un analista swing trader experto.
 
-Busca el contexto actual de mercado para {ticker} ({asset_type}) para los próximos {horizon} días.
-Considera: calendario económico esta semana, tendencia macro, eventos de riesgo, sentimiento institucional.
+Analiza el contexto actual de mercado para {ticker} ({asset_type}) para los próximos {horizon} días.
+Considera: calendario económico de esta semana, tendencia macro, eventos de riesgo y sentimiento institucional.
 
-Responde SOLO con este JSON exacto, sin texto extra, sin backticks:
-{{"macro":0,"macro_label":"Neutral","macro_why":"1 frase corta","news":0,"news_label":"Neutros","news_why":"1 frase con eventos clave","vol":"normal","vol_label":"Normal","vol_why":"1 frase","summary":"2-3 frases sobre sesgo swing {horizon}d de {ticker}"}}
+Responde SOLO con este JSON exacto, sin texto extra, sin backticks, sin explicaciones:
+{{"macro":0,"macro_label":"Neutral","macro_why":"1 frase corta explicando el sesgo macro","news":0,"news_label":"Neutros","news_why":"1 frase con los eventos clave de esta semana","vol":"normal","vol_label":"Normal","vol_why":"1 frase sobre volatilidad esperada","summary":"2-3 frases sobre el sesgo swing {horizon}d de {ticker}: tendencia, eventos y recomendación direccional"}}
 
-macro y news = entero -2 a 2 · vol = "low", "normal" o "high"."""
-
-    try:
-        raw = gemini_search(prompt, api_key)
-        m   = re.search(r'\{[\s\S]*\}', raw)
-        if not m:
-            raise ValueError("No JSON")
-        return json.loads(m.group())
-    except Exception as e:
-        st.warning(f"Contexto no disponible ({e}). Valores neutros aplicados.")
-        return {
-            "macro":0,"macro_label":"Neutral","macro_why":"No disponible",
-            "news":0,"news_label":"Neutros","news_why":"No disponible",
-            "vol":"normal","vol_label":"Normal","vol_why":"Por defecto",
-            "summary":"Contexto no disponible. Valores neutros."
-        }
+Valores: macro y news = entero entre -2 y 2 · vol = "low", "normal" o "high"."""
 
 
-def get_swing_analysis(ticker, price, last_z, last_rmf, bull_pct,
-                        sigma, atr, mc_mean, macro, news,
-                        asset_type, horizon, n_candles, ctx_summary, api_key, dec) -> str:
+def build_analysis_prompt(ticker, price, last_z, last_rmf, bull_pct,
+                           sigma, atr, mc_mean, macro, news,
+                           asset_type, horizon, n_candles, ctx_summary, dec) -> str:
     macro_lbl = ["muy bajista","bajista","neutral","alcista","muy alcista"][macro+2]
     news_lbl  = ["muy negativos","negativos","neutros","positivos","muy positivos"][news+2]
-    ctx_block = f"\nContexto web actual: {ctx_summary}" if ctx_summary else ""
-
-    prompt = f"""Eres un trader institucional swing. Escribe un análisis técnico en español (4-5 frases). Sin asteriscos ni markdown.
+    ctx_block = f"\nContexto de mercado actual: {ctx_summary}" if ctx_summary else ""
+    return f"""Eres un trader institucional swing. Escribe un análisis técnico en español (4-5 frases). Sin asteriscos ni markdown.
 
 Activo: {ticker} ({asset_type}) | Horizonte: {horizon}d | Timeframe: {TF_LABEL}
-Precio: {price:.{dec}f} | Media MC {horizon}d: {mc_mean:.{dec}f}
-Z-Diff {TF_LABEL}: {last_z:.3f} → {"COMPRA" if last_z>1.5 else "VENTA" if last_z<-1.5 else "NEUTRAL"}
-RMF: {last_rmf:,.0f} | P(alcista): {bull_pct:.1f}% | σ {TF_LABEL}: {sigma*100:.3f}% | ATR {TF_LABEL}: {atr:.{dec}f}
-Macro {horizon}d: {macro_lbl} | Eventos: {news_lbl}{ctx_block}
-Velas {TF_LABEL}: {n_candles}
+Precio actual: {price:.{dec}f} | Precio esperado MC ({horizon}d): {mc_mean:.{dec}f}
+Z-Diff {TF_LABEL}: {last_z:.3f} — {"COMPRA" if last_z>1.5 else "VENTA" if last_z<-1.5 else "NEUTRAL"}
+RMF acumulado: {last_rmf:,.0f} | Probabilidad alcista: {bull_pct:.1f}%
+Volatilidad σ {TF_LABEL}: {sigma*100:.3f}% | ATR {TF_LABEL} real: {atr:.{dec}f}
+Contexto macro ({horizon}d): {macro_lbl} | Noticias/eventos: {news_lbl}{ctx_block}
+Velas {TF_LABEL} analizadas: {n_candles}
 
-Valida si Z-Diff {TF_LABEL} confirma el sesgo MC multi-step, describe presencia institucional y justifica Stop vs Limit para GTC {horizon}d."""
+Valida si el Z-Diff {TF_LABEL} confirma el sesgo del Monte Carlo multi-step. Describe la presencia institucional en el Order Flow. Justifica si la entrada debe ser Stop (ruptura) o Limit (pullback) para un swing GTC de {horizon} días."""
 
+
+def parse_context_json(raw: str) -> dict:
+    """Extrae el JSON de la respuesta pegada por el usuario."""
     try:
-        return gemini_plain(prompt, api_key)
+        m = re.search(r'\{[\s\S]*\}', raw)
+        if not m:
+            raise ValueError("No se encontró JSON en la respuesta")
+        return json.loads(m.group())
     except Exception as e:
-        return (f"Z-Diff {TF_LABEL} de {last_z:.3f} indica presión "
-                f"{'alcista' if last_z>0 else 'bajista'} en {ticker}. "
-                f"MC proyecta precio {'por encima' if mc_mean>price else 'por debajo'} "
-                f"del nivel actual en {horizon}d con P(alcista)={bull_pct:.1f}%. "
-                f"(Gemini no disponible: {e})")
+        st.error(f"No se pudo leer el JSON: {e}\nAsegúrate de copiar solo el bloque JSON.")
+        return None
 
 # ─── CHARTS ───────────────────────────────────────────────────────────────────
 def plot_candles_zdiff(df):
@@ -222,10 +210,12 @@ def plot_mc_histogram(final_prices, ref_price, entry, sl, tp, bull):
 # ─── SIDEBAR ──────────────────────────────────────────────────────────────────
 with st.sidebar:
     st.markdown("## ⚙️ Configuración")
-    api_key = st.text_input("🔑 Gemini API Key", type="password",
-                              help="Gratis en aistudio.google.com/apikey")
-    if api_key:
-        st.success("✓ API Key configurada")
+    st.markdown("""
+**Sin API Key necesaria.**
+La app genera los prompts listos para copiar.
+Pégalos en [Gemini](https://gemini.google.com), ChatGPT o cualquier IA gratuita
+y pega la respuesta de vuelta aquí.
+""")
 
     st.divider()
     st.markdown("### Activo")
@@ -274,32 +264,28 @@ with st.sidebar:
 st.markdown(f"""
 <h1 style='font-family:Rajdhani,sans-serif;font-size:32px;letter-spacing:4px;color:#00e5ff;margin-bottom:4px'>
   ORDER<span style='color:#ffd600'>FLOW</span> PRO
-  <span style='font-size:16px;color:#ff9100;letter-spacing:2px;margin-left:8px'>{TF_LABEL} · SWING · GEMINI</span>
+  <span style='font-size:16px;color:#ff9100;letter-spacing:2px;margin-left:8px'>{TF_LABEL} · SWING · IA LIBRE</span>
 </h1>
 <p style='color:#4a6080;font-size:11px;letter-spacing:2px;margin-bottom:20px'>
   MONTE CARLO MULTI-STEP · ORDER FLOW Z-DIFF · YAHOO FINANCE · GTC ORDERS
 </p>
 """, unsafe_allow_html=True)
 
-if not api_key:
-    st.info("👈 Introduce tu **Gemini API Key** en la barra lateral para activar la IA.\n\n"
-            "Obtén una **gratis** en [aistudio.google.com/apikey](https://aistudio.google.com/apikey)")
+st.info(
+    "💡 **Sin API Key.** Esta app genera prompts listos para copiar. "
+    "Pégalos en [Gemini gratis](https://gemini.google.com) o ChatGPT y pega la respuesta de vuelta. "
+    "No necesitas cuenta de pago en ningún servicio."
+)
 
 # ─── SESSION STATE ────────────────────────────────────────────────────────────
-for k in ["df","context","results"]:
+for k in ["df","context","results","analysis_prompt"]:
     if k not in st.session_state:
         st.session_state[k] = None
 
-# ─── BUTTONS ──────────────────────────────────────────────────────────────────
-col_l, col_c = st.columns(2)
-with col_l:
-    load_btn = st.button(f"📡 CARGAR VELAS {TF_LABEL} — Yahoo Finance",
-                          use_container_width=True, type="primary")
-with col_c:
-    ctx_btn  = st.button("🌐 CONTEXTO — Gemini + Google Search",
-                          use_container_width=True, disabled=not api_key)
+# ─── CARGAR VELAS ────────────────────────────────────────────────────────────
+load_btn = st.button(f"📡 CARGAR VELAS {TF_LABEL} — Yahoo Finance",
+                      use_container_width=True, type="primary")
 
-# ── Load candles ──────────────────────────────────────────────────────────────
 if load_btn:
     if not ticker:
         st.error("Introduce un símbolo primero.")
@@ -318,17 +304,38 @@ if load_btn:
                     st.session_state.df      = df
                     st.session_state.results = None
                     lp  = float(df["Close"].iloc[-1])
-                    dec = 1 if lp>1000 else 2 if lp>100 else 5
-                    st.success(f"✓ {len(df)} velas {TF_LABEL} · {ticker} · Precio: **{lp:.{dec}f}**")
+                    dec_p = 1 if lp>1000 else 2 if lp>100 else 5
+                    st.success(f"✓ {len(df)} velas {TF_LABEL} · {ticker} · Precio: **{lp:.{dec_p}f}**")
             except Exception as e:
                 st.error(f"Error: {e}")
 
-# ── Fetch context ─────────────────────────────────────────────────────────────
-if ctx_btn and api_key:
-    with st.spinner(f"Gemini buscando contexto swing {horizon}d para {ticker}..."):
-        st.session_state.context = get_market_context(ticker, asset_type, horizon, api_key)
+# ─── CONTEXTO — PASO 1: COPIAR PROMPT ────────────────────────────────────────
+st.markdown("---")
+st.markdown("### 🤖 Paso 1 — Contexto de mercado (copia el prompt → pega en IA → pega respuesta)")
 
-# ── Show context ──────────────────────────────────────────────────────────────
+with st.expander("📋 Ver prompt para contexto de mercado", expanded=False):
+    ctx_prompt = build_context_prompt(ticker, asset_type, horizon)
+    st.code(ctx_prompt, language="text")
+    st.caption("👆 Copia todo el texto de arriba y pégalo en Gemini, ChatGPT o cualquier IA gratuita.")
+
+ctx_response = st.text_area(
+    "📥 Pega aquí la respuesta de la IA (el bloque JSON):",
+    height=120,
+    placeholder='{"macro":1,"macro_label":"Alcista","macro_why":"...","news":0,...}',
+    key="ctx_response_input"
+)
+
+if st.button("✅ Procesar contexto", use_container_width=True):
+    if ctx_response.strip():
+        parsed = parse_context_json(ctx_response)
+        if parsed:
+            st.session_state.context = parsed
+            st.success("✓ Contexto procesado correctamente")
+            st.rerun()
+    else:
+        st.warning("Pega primero la respuesta de la IA.")
+
+# ── Mostrar contexto procesado ─────────────────────────────────────────────
 if st.session_state.context:
     ctx = st.session_state.context
     sc  = lambda v: "#00e676" if v>0 else "#ff1744" if v<0 else "#ffd600"
@@ -360,10 +367,6 @@ if st.session_state.df is not None:
                          use_container_width=True, type="primary")
 
     if run_btn:
-        if not api_key:
-            st.error("Introduce tu Gemini API Key.")
-            st.stop()
-
         with st.spinner("Ejecutando motor cuantitativo..."):
             prog = st.progress(0, text=f"Calculando Order Flow {TF_LABEL}...")
 
@@ -415,17 +418,16 @@ if st.session_state.df is not None:
             o_type    = "STOP" if use_stop else "LIMIT"
             exp_date  = get_expiry_date(horizon)
 
-            prog.progress(82, text="Analizando con Gemini...")
+            prog.progress(82, text="Preparando prompt de análisis...")
 
             dec = 1 if price>1000 else 2 if price>100 else 4
-            try:
-                ai_text = get_swing_analysis(
-                    ticker, price, last_z, last_rmf, adj_bull,
-                    sigma, atr, mc_mean, macro, news_v,
-                    asset_type, horizon, len(df), ctx_sum, api_key, dec
-                )
-            except Exception as e:
-                ai_text = f"Análisis no disponible: {e}"
+            # Guardar prompt de análisis en session_state para mostrarlo tras el modelo
+            st.session_state.analysis_prompt = build_analysis_prompt(
+                ticker, price, last_z, last_rmf, adj_bull,
+                sigma, atr, mc_mean, macro, news_v,
+                asset_type, horizon, len(df), ctx_sum, dec
+            )
+            ai_text = ""  # se rellenará cuando el usuario pegue la respuesta
 
             prog.progress(100, text="¡Completado!")
             prog.empty()
@@ -584,9 +586,33 @@ if st.session_state.results:
         with lc3: st.metric("Beneficio pot.", f"${profit:.0f}")
         with lc4: st.metric("Ratio R:R",      f"1:{rr:.1f}")
 
-    # AI analysis
-    st.markdown("### 🤖 Análisis Institucional — Gemini 2.0")
-    st.info(r["ai_text"])
+    # ── Paso 2: Análisis IA (prompt copy/paste) ─────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🤖 Paso 2 — Análisis institucional (copia el prompt → pega en IA → pega respuesta)")
+
+    with st.expander("📋 Ver prompt para análisis institucional", expanded=True):
+        if "analysis_prompt" in st.session_state and st.session_state.analysis_prompt:
+            st.code(st.session_state.analysis_prompt, language="text")
+            st.caption("👆 Copia este prompt y pégalo en Gemini, ChatGPT o cualquier IA gratuita.")
+        else:
+            st.info("Ejecuta el modelo primero para generar el prompt de análisis.")
+
+    analysis_response = st.text_area(
+        "📥 Pega aquí el análisis de la IA:",
+        value=r.get("ai_text", ""),
+        height=160,
+        placeholder="Pega aquí el texto de análisis que te devuelva la IA...",
+        key="analysis_response_input"
+    )
+    if st.button("✅ Guardar análisis", key="save_analysis"):
+        if analysis_response.strip():
+            st.session_state.results["ai_text"] = analysis_response
+            st.success("✓ Análisis guardado")
+            st.rerun()
+
+    if r.get("ai_text"):
+        st.markdown("**Análisis guardado:**")
+        st.info(r["ai_text"])
 
     # OF table
     with st.expander(f"📋 Tabla Order Flow {TF_LABEL} completa"):
