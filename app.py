@@ -74,6 +74,251 @@ def calc_order_flow(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     return df
 
 
+def interpret_zdiff(z: float, df: pd.DataFrame, macro: int = 0) -> dict:
+    """
+    Interpreta Z-Diff usando el contexto completo del precio:
+      1. Posición en rango (¿está el precio arriba o abajo de su rango reciente?)
+      2. Momentum reciente (¿está subiendo o bajando en las últimas velas?)
+      3. Estructura: ¿está rompiendo un máximo/mínimo o rebotando en un nivel?
+      4. Magnitud Z (momentum vs agotamiento estadístico)
+      5. Sesgo macro
+    """
+    closes = df["Close"].values
+    highs  = df["High"].values
+    lows   = df["Low"].values
+    n      = len(closes)
+
+    # ── 1. Posición en rango ──────────────────────────────────────────────────
+    # ¿Dónde está el precio respecto al rango de las últimas 14 velas H4 (~2.5 días)?
+    lookback    = min(14, n)
+    range_high  = highs[-lookback:].max()
+    range_low   = lows[-lookback:].min()
+    range_span  = range_high - range_low if range_high != range_low else 1e-10
+    # 0 = en mínimos del rango, 1 = en máximos
+    price_pct   = (closes[-1] - range_low) / range_span
+
+    in_top    = price_pct > 0.75    # precio en el 25% superior del rango
+    in_bottom = price_pct < 0.25    # precio en el 25% inferior del rango
+    in_middle = not in_top and not in_bottom
+
+    # ── 2. Momentum reciente ──────────────────────────────────────────────────
+    # Pendiente de las últimas 3 velas vs las 3 anteriores
+    if n >= 6:
+        avg_recent = closes[-3:].mean()
+        avg_prev   = closes[-6:-3].mean()
+        rising     = avg_recent > avg_prev
+    else:
+        rising = closes[-1] > closes[-2] if n >= 2 else True
+
+    # ── 3. ¿Ruptura o rebote? ─────────────────────────────────────────────────
+    # Ruptura: precio supera el máximo/mínimo de las 5 velas anteriores
+    prev_high = highs[-6:-1].max() if n >= 6 else range_high
+    prev_low  = lows[-6:-1].min()  if n >= 6 else range_low
+    breaking_up   = closes[-1] > prev_high   # ruptura alcista
+    breaking_down = closes[-1] < prev_low    # ruptura bajista
+
+    # ── 4. Magnitud Z ─────────────────────────────────────────────────────────
+    abs_z = abs(z)
+
+    # ── MOTOR DE DECISIÓN ─────────────────────────────────────────────────────
+    if abs_z > 2.2:
+        # ZONA EXTREMA — el contexto del precio es determinante
+        if z > 0:
+            if in_top and not breaking_up:
+                # Flujo alcista extremo + precio en techo + sin ruptura = DISTRIBUCIÓN
+                signal = "DISTRIBUCIÓN EN TECHO"
+                label  = "▼ VENTA — distribución en máximos"
+                color  = "#ff1744"
+                expl   = (f"Z-Diff extremo ({z:.2f}) con el precio en el {price_pct*100:.0f}% "
+                          f"superior del rango y sin ruptura confirmada. "
+                          f"Patrón clásico de distribución institucional en techo. "
+                          f"El flujo comprador extremo suele preceder la caída.")
+                bull   = False
+            elif breaking_up:
+                # Flujo alcista extremo + ruptura real = MOMENTUM FUERTE
+                signal = "RUPTURA ALCISTA"
+                label  = "▲ COMPRA — ruptura con flujo institucional"
+                color  = "#00e676"
+                expl   = (f"Z-Diff extremo ({z:.2f}) confirmando ruptura del máximo previo. "
+                          f"Iniciativa compradora institucional genuina. "
+                          f"El flujo y el precio se alinean — entrada Stop válida.")
+                bull   = True
+            elif in_bottom:
+                # Flujo alcista extremo + precio en suelos = ACUMULACIÓN AGRESIVA
+                signal = "ACUMULACIÓN EN SUELO"
+                label  = "▲ COMPRA — acumulación institucional en mínimos"
+                color  = "#00e676"
+                expl   = (f"Z-Diff extremo ({z:.2f}) con el precio en la zona baja del rango "
+                          f"({price_pct*100:.0f}%). Los institucionales están acumulando "
+                          f"agresivamente en zona de valor. Entrada Limit en retroceso.")
+                bull   = True
+            else:
+                # Zona media con flujo extremo = posible agotamiento
+                signal = "AGOTAMIENTO ALCISTA"
+                label  = "⚠ PRECAUCIÓN — Z extremo en zona media"
+                color  = "#ff9100"
+                expl   = (f"Z-Diff extremo ({z:.2f}) pero el precio está en zona media del rango "
+                          f"({price_pct*100:.0f}%). Flujo comprador insostenible estadísticamente. "
+                          f"Posible pullback antes de continuar. Espera retroceso.")
+                bull   = None
+        else:
+            if in_bottom and not breaking_down:
+                # Flujo bajista extremo + precio en suelo + sin ruptura = CAPITULACIÓN
+                signal = "CAPITULACIÓN EN SUELO"
+                label  = "▲ COMPRA — capitulación vendedora en mínimos"
+                color  = "#00e676"
+                expl   = (f"Z-Diff extremo negativo ({z:.2f}) con el precio en el {price_pct*100:.0f}% "
+                          f"inferior del rango. Capitulación vendedora: el flujo bajista extremo "
+                          f"en suelos suele marcar el final de la caída. Entrada Limit en soporte.")
+                bull   = True
+            elif breaking_down:
+                # Flujo bajista extremo + ruptura bajista = MOMENTUM BAJISTA
+                signal = "RUPTURA BAJISTA"
+                label  = "▼ VENTA — ruptura con flujo institucional"
+                color  = "#ff1744"
+                expl   = (f"Z-Diff extremo negativo ({z:.2f}) confirmando ruptura del mínimo previo. "
+                          f"Distribución institucional confirmada. Stop por ruptura bajista.")
+                bull   = False
+            elif in_top:
+                # Flujo bajista extremo + precio en techo = DISTRIBUCIÓN REAL
+                signal = "DISTRIBUCIÓN EN TECHO"
+                label  = "▼ VENTA — flujo vendedor agresivo en máximos"
+                color  = "#ff1744"
+                expl   = (f"Z-Diff extremo negativo ({z:.2f}) con precio en máximos del rango "
+                          f"({price_pct*100:.0f}%). Distribución institucional clara. "
+                          f"Los institucionales están vendiendo en los altos.")
+                bull   = False
+            else:
+                signal = "AGOTAMIENTO BAJISTA"
+                label  = "⚠ PRECAUCIÓN — Z extremo negativo en zona media"
+                color  = "#ff9100"
+                expl   = (f"Z-Diff extremo negativo ({z:.2f}) en zona media del rango. "
+                          f"Flujo vendedor insostenible. Posible rebote técnico inminente.")
+                bull   = None
+
+    elif abs_z > 1.5:
+        # SEÑAL FUERTE — precio + macro definen la dirección
+        if z > 0:
+            if breaking_up or (rising and in_top and macro >= 0):
+                signal = "COMPRA — MOMENTUM"
+                label  = "▲ COMPRA (momentum + flujo confirmados)"
+                color  = "#00e676"
+                expl   = (f"Z-Diff {z:.2f} con {'ruptura del máximo previo' if breaking_up else 'precio en zona alta y subiendo'}. "
+                          f"Flujo e impulso de precio alineados. "
+                          f"{'Macro ' + ('alcista' if macro>0 else 'neutral') + ' confirma.' if macro>=0 else ''} "
+                          f"Entrada Stop.")
+                bull   = True
+            elif in_bottom and rising:
+                signal = "REBOTE EN SOPORTE"
+                label  = "▲ COMPRA — rebote desde mínimos con flujo"
+                color  = "#00e676"
+                expl   = (f"Z-Diff {z:.2f} con precio rebotando desde la zona baja del rango "
+                          f"({price_pct*100:.0f}%). El flujo comprador confirma el rebote en soporte. "
+                          f"Entrada Limit en retroceso a zona de valor.")
+                bull   = True
+            elif in_top and not rising:
+                signal = "DISTRIBUCIÓN"
+                label  = "▼ VENTA — flujo alto pero precio cede en techo"
+                color  = "#ff1744"
+                expl   = (f"Z-Diff {z:.2f} elevado pero el precio está cediendo desde máximos "
+                          f"({price_pct*100:.0f}% del rango). Patrón de distribución. "
+                          f"El flujo no está traduciendo en subida de precio.")
+                bull   = False
+            elif macro < 0:
+                signal = "PRECAUCIÓN ALCISTA"
+                label  = "⚡ FLUJO ALCISTA — macro en contra"
+                color  = "#ffd600"
+                expl   = (f"Z-Diff {z:.2f} positivo pero contexto macro bajista. "
+                          f"Precio en {price_pct*100:.0f}% del rango. "
+                          f"Reduce tamaño o espera confirmación de precio.")
+                bull   = True
+            else:
+                signal = "SESGO ALCISTA"
+                label  = "↑ FLUJO ALCISTA — precio en zona media"
+                color  = "#69f0ae"
+                expl   = (f"Z-Diff {z:.2f} con precio en zona media del rango ({price_pct*100:.0f}%). "
+                          f"Flujo positivo sin contexto extremo claro. Monitoriza ruptura.")
+                bull   = True
+        else:
+            if breaking_down or (not rising and in_bottom and macro <= 0):
+                signal = "VENTA — MOMENTUM"
+                label  = "▼ VENTA (momentum + flujo confirmados)"
+                color  = "#ff1744"
+                expl   = (f"Z-Diff {z:.2f} con {'ruptura del mínimo previo' if breaking_down else 'precio en zona baja y cayendo'}. "
+                          f"Flujo e impulso alineados en bajista. "
+                          f"{'Macro bajista confirma.' if macro<0 else ''} Entrada Stop bajista.")
+                bull   = False
+            elif in_top and not rising:
+                signal = "RECHAZO EN RESISTENCIA"
+                label  = "▼ VENTA — rechazo desde máximos con flujo"
+                color  = "#ff1744"
+                expl   = (f"Z-Diff {z:.2f} negativo con precio rechazando desde la zona alta del rango "
+                          f"({price_pct*100:.0f}%). Flujo vendedor confirma el rechazo en resistencia. "
+                          f"Entrada Limit short en retroceso al alza.")
+                bull   = False
+            elif in_bottom and rising:
+                signal = "DIVERGENCIA ALCISTA"
+                label  = "⚡ POSIBLE GIRO — precio sube vs flujo bajo"
+                color  = "#ffd600"
+                expl   = (f"Z-Diff {z:.2f} negativo pero precio subiendo desde mínimos. "
+                          f"Posible giro alcista — el precio anticipa al flujo. "
+                          f"Espera confirmación antes de operar.")
+                bull   = None
+            elif macro > 0:
+                signal = "PRECAUCIÓN BAJISTA"
+                label  = "⚡ FLUJO BAJISTA — macro en contra"
+                color  = "#ffd600"
+                expl   = (f"Z-Diff {z:.2f} negativo pero contexto macro alcista. "
+                          f"Posible corrección temporal. No agresivo en cortos.")
+                bull   = False
+            else:
+                signal = "SESGO BAJISTA"
+                label  = "↓ FLUJO BAJISTA — precio en zona media"
+                color  = "#ff6b6b"
+                expl   = (f"Z-Diff {z:.2f} con precio en zona media ({price_pct*100:.0f}%). "
+                          f"Flujo negativo sin contexto extremo. Monitoriza ruptura bajista.")
+                bull   = False
+
+    elif abs_z > 0.5:
+        if z > 0:
+            signal = "SESGO ALCISTA"
+            label  = "↑ SESGO LARGO MODERADO"
+            color  = "#69f0ae"
+            expl   = (f"Flujo positivo moderado ({z:.2f}). Precio en {price_pct*100:.0f}% del rango. "
+                      f"{'Zona alta: cuidado con resistencia.' if in_top else 'Zona baja: buena zona de valor.' if in_bottom else 'Zona media: neutral.'}")
+            bull   = True
+        else:
+            signal = "SESGO BAJISTA"
+            label  = "↓ SESGO CORTO MODERADO"
+            color  = "#ff6b6b"
+            expl   = (f"Flujo negativo moderado ({z:.2f}). Precio en {price_pct*100:.0f}% del rango. "
+                      f"{'Zona baja: cuidado con soporte.' if in_bottom else 'Zona alta: posible distribución lenta.' if in_top else 'Zona media: neutral.'}")
+            bull   = False
+    else:
+        signal = "NEUTRAL"
+        label  = "➡ NEUTRAL — subasta en equilibrio"
+        color  = "#ffd600"
+        expl   = (f"Z-Diff en zona neutral ({z:.2f}). Precio en {price_pct*100:.0f}% del rango. "
+                  f"No hay mano fuerte dominante. Evita entradas direccionales.")
+        bull   = None
+
+    return {
+        "signal":    signal,
+        "label":     label,
+        "color":     color,
+        "expl":      expl,
+        "bull":      bull,
+        "rising":    rising,
+        "abs_z":     abs_z,
+        "extreme":   abs_z > 2.2,
+        "price_pct": price_pct,       # posición en rango 0-1
+        "in_top":    in_top,
+        "in_bottom": in_bottom,
+        "breaking_up":   breaking_up,
+        "breaking_down": breaking_down,
+    }
+
+
 def monte_carlo_multistep(price, returns, sims, steps, z_adj, vol_mult):
     mu    = returns.mean()
     sigma = returns.std() * vol_mult
@@ -136,7 +381,7 @@ def build_analysis_prompt(ticker, price, last_z, last_rmf, bull_pct,
 
 Activo: {ticker} ({asset_type}) | Horizonte: {horizon}d | Timeframe: {TF_LABEL}
 Precio actual: {price:.{dec}f} | Precio esperado MC ({horizon}d): {mc_mean:.{dec}f}
-Z-Diff {TF_LABEL}: {last_z:.3f} — {"COMPRA" if last_z>1.5 else "VENTA" if last_z<-1.5 else "NEUTRAL"}
+Z-Diff {TF_LABEL}: {last_z:.3f} — señal contextual: ver análisis del modelo
 RMF acumulado: {last_rmf:,.0f} | Probabilidad alcista: {bull_pct:.1f}%
 Volatilidad σ {TF_LABEL}: {sigma*100:.3f}% | ATR {TF_LABEL} real: {atr:.{dec}f}
 Contexto macro ({horizon}d): {macro_lbl} | Noticias/eventos: {news_lbl}{ctx_block}
@@ -370,8 +615,11 @@ if st.session_state.df is not None:
         with st.spinner("Ejecutando motor cuantitativo..."):
             prog = st.progress(0, text=f"Calculando Order Flow {TF_LABEL}...")
 
-            last_z   = float(df["z_diff"].iloc[-1])
-            last_rmf = float(df["rmf"].iloc[-1])
+            last_z    = float(df["z_diff"].iloc[-1])
+            last_rmf  = float(df["rmf"].iloc[-1])
+            # Interpret Z-Diff in context (needs macro from context, default 0)
+            macro_pre = (st.session_state.context or {}).get("macro", 0)
+            zdiff_ctx = interpret_zdiff(last_z, df, macro_pre)
             prog.progress(15, text="Calculando log-retornos...")
 
             closes  = df["Close"].values.astype(float)
@@ -405,8 +653,20 @@ if st.session_state.df is not None:
 
             prog.progress(68, text="Calculando niveles GTC...")
 
-            pct       = lambda p: float(np.percentile(sorted_p, p))
-            prim_bull = adj_bull > adj_bear
+            pct = lambda p: float(np.percentile(sorted_p, p))
+
+            # Direction: combine MC probability + Z-Diff context
+            mc_bull   = adj_bull > adj_bear
+            z_bull    = zdiff_ctx["bull"]
+            if z_bull is None:
+                # Neutral Z: follow Monte Carlo
+                prim_bull = mc_bull
+            elif z_bull == mc_bull:
+                # Agreement: strong signal
+                prim_bull = mc_bull
+            else:
+                # Disagreement: use MC but flag it
+                prim_bull = mc_bull
             last3     = df.tail(3)
             e_stop    = (float(last3["High"].max()) + atr*0.08 if prim_bull
                          else float(last3["Low"].min()) - atr*0.08)
@@ -433,6 +693,7 @@ if st.session_state.df is not None:
             prog.empty()
 
             st.session_state.results = dict(
+                zdiff_ctx=zdiff_ctx,
                 price=price, last_z=last_z, last_rmf=last_rmf,
                 adj_bull=adj_bull, adj_bear=adj_bear,
                 mc_mean=mc_mean, p5=p5, p95=p95,
@@ -480,15 +741,60 @@ if st.session_state.results:
         </div>""", unsafe_allow_html=True)
 
     # Mini stats
-    z = r["last_z"]
-    zs = "COMPRA" if z>1.5 else "SESGO +" if z>0.5 else "NEUTRAL" if z>-0.5 else "SESGO -" if z>-1.5 else "VENTA"
+    z   = r["last_z"]
+    zctx= r.get("zdiff_ctx", {})
+    zs  = zctx.get("label", "—")
     c1,c2,c3,c4 = st.columns(4)
     with c1: st.metric(f"Z-Diff {TF_LABEL}", f"{z:.3f}", delta=zs,
-                        delta_color="normal" if z>0 else "inverse")
+                        delta_color="normal" if z>0 else "inverse" if z<0 else "off")
     with c2: st.metric("Precio esperado (MC)", f"{r['mc_mean']:.{dec}f}",
                         delta=f"{((r['mc_mean']/r['price'])-1)*100:+.3f}%")
     with c3: st.metric(f"Volatilidad σ {TF_LABEL}", f"{r['sigma']*100:.3f}%")
     with c4: st.metric(f"ATR {TF_LABEL} real", f"{r['atr']:.{dec}f}")
+
+    # ── Z-Diff interpretación contextual ────────────────────────────────────
+    zctx_color  = zctx.get("color", "#ffd600")
+    zctx_signal = zctx.get("signal", "—")
+    zctx_expl   = zctx.get("expl", "—")
+    zctx_rising = zctx.get("rising", True)
+    zctx_ext    = zctx.get("extreme", False)
+
+    # Divergence warning if Z and MC disagree
+    z_bull_val = zctx.get("bull")
+    mc_bull    = r["prim_bull"]
+    divergence = (z_bull_val is not None) and (z_bull_val != mc_bull)
+
+    price_pct_val  = zctx.get("price_pct", 0.5)
+    in_top_val     = zctx.get("in_top", False)
+    in_bottom_val  = zctx.get("in_bottom", False)
+    brk_up_val     = zctx.get("breaking_up", False)
+    brk_dn_val     = zctx.get("breaking_down", False)
+
+    range_label = ("🔝 En máximos del rango" if in_top_val
+                   else "🔻 En mínimos del rango" if in_bottom_val
+                   else "↔ En zona media del rango")
+    struct_label = ("💥 Rompiendo máximo previo" if brk_up_val
+                    else "💥 Rompiendo mínimo previo" if brk_dn_val
+                    else "— Sin ruptura")
+
+    st.markdown(f"""
+    <div style='background:#0a1019;border:1px solid {zctx_color};border-left:4px solid {zctx_color};
+        border-radius:4px;padding:16px 20px;margin-bottom:12px'>
+        <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;flex-wrap:wrap;gap:8px'>
+            <div style='font-family:Rajdhani,sans-serif;font-size:20px;font-weight:700;
+                color:{zctx_color};letter-spacing:2px'>{zctx_signal}</div>
+            <div style='display:flex;gap:16px;font-size:10px;color:#4a6080;flex-wrap:wrap'>
+                <span>Z-Diff: <b style='color:{zctx_color}'>{z:.3f}</b></span>
+                <span>Precio: <b style='color:{"#00e676" if zctx_rising else "#ff1744"}'>{"↑ subiendo" if zctx_rising else "↓ cayendo"}</b></span>
+                <span>Rango: <b style='color:#cdd9e5'>{price_pct_val*100:.0f}%</b> — {range_label}</span>
+                <span style='color:{"#ff9100" if brk_up_val or brk_dn_val else "#4a6080"}'>{struct_label}</span>
+                {"<span style='color:#ff9100'>⚠ ZONA EXTREMA</span>" if zctx_ext else ""}
+            </div>
+        </div>
+        <div style='font-size:12px;color:#cdd9e5;line-height:1.7'>{zctx_expl}</div>
+        {"<div style='margin-top:8px;padding:8px 12px;background:rgba(255,145,0,.08);border:1px solid rgba(255,145,0,.3);border-radius:3px;font-size:11px;color:#ff9100'>⚡ <b>Divergencia Z vs MC:</b> El Order Flow y Monte Carlo apuntan en direcciones opuestas. Reduce el tamaño de posición y espera confirmación.</div>" if divergence else ""}
+    </div>
+    """, unsafe_allow_html=True)
 
     # Z-Diff gauge
     zc = "#00e676" if z>1.5 else "#69f0ae" if z>0.5 else "#ffd600" if z>-0.5 else "#ff6b6b" if z>-1.5 else "#ff1744"
